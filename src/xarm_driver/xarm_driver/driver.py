@@ -97,7 +97,7 @@ class XArmDriver:
             speed=speed, mvacc=mvacc,
             wait=wait, is_radian=is_radian,
         )
-        return code == 0
+        return code == 0 # return True if the move is successful, False otherwise
 
     def set_xarm_gripper(self, pos: float, wait: bool = True) -> None:
         if self.teaching_mode:

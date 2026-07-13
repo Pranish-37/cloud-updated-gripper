@@ -1,18 +1,26 @@
 """
 xarm_driver_node — ROS 2 node that wraps XArmDriver.
 
-Publishes (15 Hz):
-  /robot/joint_states   sensor_msgs/JointState
-  /robot/ee_pose        geometry_msgs/PoseStamped   (position mm, orientation as quaternion)
-  /robot/gripper_pos    std_msgs/Float64             (0–850 raw)
+Publishes (15 Hz) — relative topic names, affected by ROS 2 namespace:
+  robot/joint_states   sensor_msgs/JointState
+  robot/ee_pose        geometry_msgs/PoseStamped   (position mm, orientation as quaternion)
+  robot/gripper_pos    std_msgs/Float64             (0-850 raw)
 
-Subscribes:
-  /policy/action_cmd    std_msgs/Float64MultiArray   (7-vector: x,y,z mm · roll,pitch,yaw rad · gripper)
+Subscribes — relative topic name:
+  policy/action_cmd    std_msgs/Float64MultiArray   (7-vector: x,y,z mm · roll,pitch,yaw rad · gripper)
 
 Parameters:
   robot_ip        (str,   default '192.168.0.244')
+  robot_name      (str,   default 'robot')          — used as TF frame_id prefix
   publish_rate    (float, default 15.0  Hz)
   gripper_deadband(float, default 20.0  raw units)
+
+Multi-robot usage — launch each instance with its own namespace, e.g.:
+  ros2 run xarm_driver xarm_driver_node --ros-args \
+      -r __ns:=/robot_1 -p robot_ip:=192.168.0.244 -p robot_name:=robot_1
+  ros2 run xarm_driver xarm_driver_node --ros-args \
+      -r __ns:=/robot_2 -p robot_ip:=192.168.0.245 -p robot_name:=robot_2
+Topics will be scoped automatically: /robot_1/robot/joint_states, /robot_2/robot/joint_states, etc.
 """
 
 import math
@@ -52,33 +60,35 @@ class XArmDriverNode(Node):
         super().__init__('xarm_driver_node')
 
         self.declare_parameter('robot_ip', '192.168.0.244')
+        self.declare_parameter('robot_name', 'robot')
         self.declare_parameter('publish_rate', 15.0)
         self.declare_parameter('gripper_deadband', 20.0)
 
         robot_ip = self.get_parameter('robot_ip').get_parameter_value().string_value
+        self._robot_name = self.get_parameter('robot_name').get_parameter_value().string_value
         rate = self.get_parameter('publish_rate').get_parameter_value().double_value
         self._deadband = self.get_parameter('gripper_deadband').get_parameter_value().double_value
 
         # --- driver ---
         self._driver = XArmDriver(robot_ip)
         self._driver.connect()
-        self.get_logger().info(f'Connected to xArm at {robot_ip}')
+        self.get_logger().info(f'Connected to xArm at {robot_ip}') # log the connection status
 
-        # --- publishers ---
-        self._pub_joints = self.create_publisher(JointState, '/robot/joint_states', 10)
-        self._pub_ee = self.create_publisher(PoseStamped, '/robot/ee_pose', 10)
-        self._pub_gripper = self.create_publisher(Float64, '/robot/gripper_pos', 10)
+        # --- publishers (relative names → scoped by namespace for multi-robot) ---
+        self._pub_joints = self.create_publisher(JointState, 'robot/joint_states', 1) # use relative dir, scoped by namespace for multi-robot
+        self._pub_ee = self.create_publisher(PoseStamped, 'robot/ee_pose', 1) # use relative dir, scoped by namespace for multi-robot
+        self._pub_gripper = self.create_publisher(Float64, 'robot/gripper_pos', 1) # use relative dir, scoped by namespace for multi-robot
 
-        # --- subscriber ---
+        # --- subscriber (relative name → scoped by namespace) ---
         self._sub_action = self.create_subscription(
             Float64MultiArray,
-            '/policy/action_cmd',
+            'policy/action_cmd',
             self._on_action_cmd,
-            10,
+            1,
         )
 
         # --- state publish timer ---
-        self._timer = self.create_timer(1.0 / rate, self._publish_state)
+        self._timer = self.create_timer(1.0 / rate, self._publish_state) # create a timer for the state publishing, it will be called at the publish rate
 
     # ------------------------------------------------------------------
     # State publishing
@@ -90,7 +100,7 @@ class XArmDriverNode(Node):
             self.get_logger().warn('Failed to read robot state; skipping publish.')
             return
 
-        now = self.get_clock().now().to_msg()
+        now = self.get_clock().now().to_msg() # get the current time
         joints = state['joints']   # (7,) radians
         ee = state['ee_pose']      # (6,) x,y,z mm · roll,pitch,yaw rad
         gripper = state['gripper'] # 0–850
@@ -98,15 +108,15 @@ class XArmDriverNode(Node):
         # JointState
         js = JointState()
         js.header.stamp = now
-        js.header.frame_id = 'base_link'
+        js.header.frame_id = f'{self._robot_name}/base_link'
         js.name = JOINT_NAMES
-        js.position = [float(j) for j in joints[:7]]
+        js.position = [float(j) for j in joints[:7]] # convert the joint angles to float
         self._pub_joints.publish(js)
 
         # PoseStamped — position in mm, orientation as quaternion
         ps = PoseStamped()
         ps.header.stamp = now
-        ps.header.frame_id = 'base_link'
+        ps.header.frame_id = f'{self._robot_name}/base_link'
         ps.pose.position.x = float(ee[0])
         ps.pose.position.y = float(ee[1])
         ps.pose.position.z = float(ee[2])
@@ -115,29 +125,29 @@ class XArmDriverNode(Node):
         ps.pose.orientation.y = qy
         ps.pose.orientation.z = qz
         ps.pose.orientation.w = qw
-        self._pub_ee.publish(ps)
+        self._pub_ee.publish(ps) # publish the end effector pose
 
         # Gripper
         gp = Float64()
         gp.data = float(gripper)
-        self._pub_gripper.publish(gp)
+        self._pub_gripper.publish(gp) # publish the gripper position
 
     # ------------------------------------------------------------------
     # Action command callback
     # ------------------------------------------------------------------
 
-    def _on_action_cmd(self, msg: Float64MultiArray) -> None:
+    def _on_action_cmd(self, msg: Float64MultiArray) -> None: # callback function for the action command, it will be called when the action command is received
         data = list(msg.data)
-        if len(data) != 7:
+        if len(data) != 7: # check if the action command is a 7-vector: x,y,z mm  roll,pitch,yaw rad  gripper
             self.get_logger().error(
-                f'/policy/action_cmd expects 7-vector, got {len(data)} — ignoring.'
+                f'/policy/action_cmd expects 7-vector, got {len(data)} — ignoring.' # log the error
             )
             return
 
-        x, y, z, roll, pitch, yaw, gripper = data
+        x, y, z, roll, pitch, yaw, gripper = data # unpack the action command
 
         # Workspace limit check
-        if not (_WS['x'][0] <= x <= _WS['x'][1]):
+        if not (_WS['x'][0] <= x <= _WS['x'][1]): # check if the x coordinate is within the workspace limits
             self.get_logger().warn(f'x={x:.1f} mm out of workspace [{_WS["x"]}] — cmd rejected.')
             return
         if not (_WS['y'][0] <= y <= _WS['y'][1]):
@@ -167,10 +177,10 @@ class XArmDriverNode(Node):
 
 
 def main(args=None):
-    rclpy.init(args=args)
+    rclpy.init(args=args) # initialize the ROS client library
     node = XArmDriverNode()
     try:
-        rclpy.spin(node)
+        rclpy.spin(node) # spin the node, it will run until the node is stopped
     except KeyboardInterrupt:
         pass
     finally:

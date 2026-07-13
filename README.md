@@ -52,13 +52,6 @@ xhost +local:docker       # on the host (once per login session)
 ./scripts/launch_teleop.sh
 ```
 
-Useful aliases inside the container:
-
-| Alias | Action |
-|-------|--------|
-| `cb` | `colcon build --symlink-install` + source |
-| `cs` | source `install/setup.bash` |
-
 > **No GPU needed for teleop/camera/robot control.**  
 > GPU passthrough (`--gpus all`) is enabled automatically if nvidia-container-toolkit is present.  
 > Disable with `./scripts/docker_shell.sh --no-gpu`.

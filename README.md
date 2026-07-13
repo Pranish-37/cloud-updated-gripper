@@ -147,17 +147,17 @@ Controls:
 ## ROS Topic Map
 
 ```
-xarm_driver ──► robot/joint_states      sensor_msgs/JointState
-            ──► robot/ee_pose           geometry_msgs/PoseStamped
-            ──► robot/gripper_pos       std_msgs/Float64
+xarm_driver publish: robot/joint_states      sensor_msgs/JointState
+            publish: robot/ee_pose           geometry_msgs/PoseStamped
+            publish: robot/gripper_pos       std_msgs/Float64
 
-camera_node ──► camera/color/image_raw  sensor_msgs/Image
+camera_node publish: camera/color/image_raw  sensor_msgs/Image
 
-obs_aggregator ◄── robot/* + camera/*
-               ──► observation/frame    cloudgripper_msgs/ObsFrame  (5 Hz)
+obs_aggregator subscibe: robot/* + camera/*
+               publish: observation/frame    cloudgripper_msgs/ObsFrame
 
-teleop_node ──► policy/action_cmd       std_msgs/Float64MultiArray  (7-vec)
-xarm_driver ◄── policy/action_cmd
+teleop_node publish: action_cmd       std_msgs/Float64MultiArray
+xarm_driver subscribe: policy/action_cmd
 ```
 
 All topic names are relative — prefix with a namespace for multi-robot setups  
@@ -165,7 +165,7 @@ All topic names are relative — prefix with a namespace for multi-robot setups
 
 ---
 
-## Hardware
+## Hardware config (default)
 
 | Component | Value |
 |-----------|-------|

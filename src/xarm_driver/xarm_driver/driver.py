@@ -97,7 +97,33 @@ class XArmDriver:
             speed=speed, mvacc=mvacc,
             wait=wait, is_radian=is_radian,
         )
-        return code == 0 # return True if the move is successful, False otherwise
+        return code == 0
+
+    def set_servo_cartesian(
+        self,
+        x: float, y: float, z: float,
+        roll: float, pitch: float, yaw: float,
+        is_radian: bool = True,
+    ) -> bool:
+        """Servo mode (xArm mode 1) — replaces current target immediately.
+        Non-blocking; must be called at high rate (≥ 50 Hz) for smooth motion.
+        Arm must be in mode 1 before calling (use set_arm_mode(1)).
+        """
+        if self.teaching_mode:
+            raise RuntimeError("Cannot move arm in teaching mode.")
+        code = self.arm.set_servo_cartesian(
+            [x, y, z, roll, pitch, yaw],
+            is_radian=is_radian,
+        )
+        return code == 0
+
+    def set_arm_mode(self, mode: int) -> None:
+        """Switch xArm control mode (0 = position, 1 = servo/real-time).
+        Sequence: pause → set mode → resume.
+        """
+        self.arm.set_state(3)   # pause
+        self.arm.set_mode(mode)
+        self.arm.set_state(0)   # resume # return True if the move is successful, False otherwise
 
     def set_xarm_gripper(self, pos: float, wait: bool = True) -> None:
         if self.teaching_mode:

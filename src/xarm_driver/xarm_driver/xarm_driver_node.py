@@ -14,6 +14,12 @@ Parameters:
   robot_name      (str,   default 'robot')          — used as TF frame_id prefix
   publish_rate    (float, default 15.0  Hz)
   gripper_deadband(float, default 20.0  raw units)
+  servo_mode      (bool,  default False)
+      False → mode 0: move_to(wait=True)        — precise, for policy inference
+      True  → mode 1: set_servo_cartesian()     — real-time, non-blocking, for teleop
+
+Services:
+  robot/set_servo_mode  std_srvs/SetBool   — switch servo mode at runtime
 
 Multi-robot usage — launch each instance with its own namespace, e.g.:
   ros2 run xarm_driver xarm_driver_node --ros-args \
@@ -30,6 +36,7 @@ from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64, Float64MultiArray
+from std_srvs.srv import SetBool
 
 from xarm_driver.driver import XArmDriver
 
@@ -63,16 +70,21 @@ class XArmDriverNode(Node):
         self.declare_parameter('robot_name', 'robot')
         self.declare_parameter('publish_rate', 15.0)
         self.declare_parameter('gripper_deadband', 20.0)
+        self.declare_parameter('servo_mode', False)
 
         robot_ip = self.get_parameter('robot_ip').get_parameter_value().string_value
         self._robot_name = self.get_parameter('robot_name').get_parameter_value().string_value
         rate = self.get_parameter('publish_rate').get_parameter_value().double_value
         self._deadband = self.get_parameter('gripper_deadband').get_parameter_value().double_value
+        self._servo_mode = self.get_parameter('servo_mode').get_parameter_value().bool_value
 
         # --- driver ---
         self._driver = XArmDriver(robot_ip)
         self._driver.connect()
-        self.get_logger().info(f'Connected to xArm at {robot_ip}') # log the connection status
+        if self._servo_mode:
+            self._driver.set_arm_mode(1)
+            self.get_logger().info('Servo mode (mode 1) active — real-time streaming.')
+        self.get_logger().info(f'Connected to xArm at {robot_ip}')
 
         # --- publishers (relative names → scoped by namespace for multi-robot) ---
         self._pub_joints = self.create_publisher(JointState, 'robot/joint_states', 1) # use relative dir, scoped by namespace for multi-robot
@@ -85,6 +97,13 @@ class XArmDriverNode(Node):
             'policy/action_cmd',
             self._on_action_cmd,
             1,
+        )
+
+        # --- servo mode switch service ---
+        self._mode_srv = self.create_service(
+            SetBool,
+            'robot/set_servo_mode',
+            self._on_set_servo_mode,
         )
 
         # --- state publish timer ---
@@ -157,10 +176,13 @@ class XArmDriverNode(Node):
             self.get_logger().warn(f'z={z:.1f} mm out of workspace [{_WS["z"]}] — cmd rejected.')
             return
 
-        # Cartesian move
-        ok = self._driver.move_to(x, y, z, roll, pitch, yaw, wait=True, is_radian=True)
+        # Cartesian move — servo mode: non-blocking real-time; position mode: blocking
+        if self._servo_mode:
+            ok = self._driver.set_servo_cartesian(x, y, z, roll, pitch, yaw, is_radian=True)
+        else:
+            ok = self._driver.move_to(x, y, z, roll, pitch, yaw, wait=True, is_radian=True)
         if not ok:
-            self.get_logger().warn('move_to returned failure code.')
+            self.get_logger().warn('move command returned failure code.')
 
         # Gripper with dead-band
         if abs(gripper - self._driver.xarm_gripper_pos) > self._deadband:
@@ -170,8 +192,28 @@ class XArmDriverNode(Node):
     # Cleanup
     # ------------------------------------------------------------------
 
+    def _on_set_servo_mode(self, request: SetBool.Request, response: SetBool.Response):
+        """Switch between servo mode (True) and position mode (False) at runtime."""
+        target_mode = 1 if request.data else 0
+        try:
+            self._driver.set_arm_mode(target_mode)
+            self._servo_mode = request.data
+            response.success = True
+            response.message = f'Switched to {"servo" if request.data else "position"} mode.'
+            self.get_logger().info(response.message)
+        except Exception as e:
+            response.success = False
+            response.message = str(e)
+            self.get_logger().error(f'Mode switch failed: {e}')
+        return response
+
     def destroy_node(self) -> None:
         self.get_logger().info('Shutting down — disconnecting from xArm.')
+        if self._servo_mode: # switch to position mode before disconnecting
+            try:
+                self._driver.set_arm_mode(0)
+            except Exception: # log the error
+                pass
         self._driver.disconnect()
         super().destroy_node()
 

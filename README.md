@@ -9,8 +9,8 @@ ROS 2 port of the LeRobot xArm7 pick-and-place pipeline
 
 Two paths depending on your OS:
 
-- **Ubuntu 22.04** → [Native install](#native-ubuntu-2204)
-- **Other / newer Ubuntu** → [Docker (recommended)](#docker-recommended)
+- **Ubuntu 22.04**  [Native install](#native-ubuntu-2204)
+- **Other / newer Ubuntu**  [Docker (recommended)](#docker-recommended)
 
 ---
 

@@ -48,7 +48,9 @@ if [[ ! -f "/opt/ros/${ROS_DISTRO}/setup.bash" ]]; then
     echo "        Set ROS_DISTRO env var to match your installation."
     exit 1
 fi
+set +u
 source "/opt/ros/${ROS_DISTRO}/setup.bash"
+set -u
 
 INSTALL_SETUP="${REPO_ROOT}/install/setup.bash"
 if [[ ! -f "$INSTALL_SETUP" ]]; then
@@ -56,7 +58,9 @@ if [[ ! -f "$INSTALL_SETUP" ]]; then
     echo "        cd ${REPO_ROOT} && colcon build"
     exit 1
 fi
+set +u
 source "$INSTALL_SETUP"
+set -u
 
 # ---------------------------------------------------------------------------
 # Cleanup on exit — kill background nodes when script exits or Ctrl-C

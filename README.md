@@ -7,7 +7,67 @@ ROS 2 port of the LeRobot xArm7 pick-and-place pipeline
 
 ## Setup
 
-### 1. ROS 2
+Two paths depending on your OS:
+
+- **Ubuntu 22.04** → [Native install](#native-ubuntu-2204)
+- **Other / newer Ubuntu** → [Docker (recommended)](#docker-recommended)
+
+---
+
+### Docker (recommended)
+
+Tested on Ubuntu 25.10 with Docker 29 + NVIDIA RTX 4090.  
+Requires Docker installed (`docker --version`) and `sudo` access.
+
+**Step 1 — Build the image (run once)**
+
+All ROS 2 apt packages and Python dependencies are baked into the image via `Dockerfile`.
+
+```bash
+sudo docker build -t cloudgripper_ros:humble .
+```
+
+This takes ~5 minutes on first build. The image is cached locally and survives container restarts.
+
+**Step 2 — Build the colcon workspace (run once)**
+
+```bash
+# Allow Docker to open GUI windows (needed for teleop keyboard input)
+xhost +local:docker
+
+# Enter the container
+./scripts/docker_shell.sh
+
+# Inside the container: build all 5 ROS packages
+bash /workspace/scripts/docker_setup.sh
+```
+
+**Step 3 — Every subsequent session**
+
+```bash
+xhost +local:docker       # on the host (once per login session)
+./scripts/docker_shell.sh # enter container
+
+# ROS + workspace are sourced automatically. Run teleop:
+./scripts/launch_teleop.sh
+```
+
+Useful aliases inside the container:
+
+| Alias | Action |
+|-------|--------|
+| `cb` | `colcon build --symlink-install` + source |
+| `cs` | source `install/setup.bash` |
+
+> **No GPU needed for teleop/camera/robot control.**  
+> GPU passthrough (`--gpus all`) is enabled automatically if nvidia-container-toolkit is present.  
+> Disable with `./scripts/docker_shell.sh --no-gpu`.
+
+---
+
+### Native (Ubuntu 22.04)
+
+#### 1. ROS 2
 
 Install ROS 2 (Humble or later): https://docs.ros.org/en/humble/Installation.html
 
@@ -33,13 +93,13 @@ sudo apt install -y \
 > sudo systemctl enable spacenavd --now
 > ```
 
-### 2. Python packages
+#### 2. Python packages
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 3. Build the workspace
+#### 3. Build the workspace
 
 ```bash
 cd /path/to/CloudGripper_V2_ROS

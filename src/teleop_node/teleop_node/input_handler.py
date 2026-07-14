@@ -302,6 +302,8 @@ class KeyboardInput:
             (f'  yaw  ={target[5]:7.1f} deg  {yaw_h}',       _FG),
             (f'  gripper={gripper:5.0f}   Q=open  E=close',  _FG),
             ('', _FG),
+            ('  Recording: R=toggle  N=save  Bksp=discard  Esc=finalize', _FG),
+            ('', _FG),
             ('  [sent]' if sent else '  [idle]', _ACCENT if sent else _FG),
             (f'  [{recording_status}]' if recording_status else '', rec_color),
             ('  [STOPPED — Esc]' if self._stop else '', _WARN),

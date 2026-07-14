@@ -35,8 +35,8 @@ This takes ~5 minutes on first build. The image is cached locally and survives c
 # Allow Docker to open GUI windows (needed for teleop keyboard input)
 xhost +local:docker
 
-# Enter the container
-./scripts/docker_shell.sh
+# Enter the container as root (needed for apt install in setup)
+./scripts/docker_shell.sh --root
 
 # Inside the container: build all 5 ROS packages
 bash /workspace/scripts/docker_setup.sh
@@ -46,7 +46,7 @@ bash /workspace/scripts/docker_setup.sh
 
 ```bash
 xhost +local:docker       # on the host (once per login session)
-./scripts/docker_shell.sh # enter container
+./scripts/docker_shell.sh # runs as your host user so data/ files are readable
 
 # ROS + workspace are sourced automatically. Run teleop:
 ./scripts/launch_teleop.sh
@@ -144,7 +144,7 @@ xarm_driver publish: robot/joint_states      sensor_msgs/JointState
             publish: robot/ee_pose           geometry_msgs/PoseStamped
             publish: robot/gripper_pos       std_msgs/Float64
 
-camera_node publish: camera/color/image_raw  sensor_msgs/Image
+camera_node publish: camera/color/image      sensor_msgs/Image
 
 obs_aggregator subscibe: robot/* + camera/*
                publish: observation/frame    cloudgripper_msgs/ObsFrame

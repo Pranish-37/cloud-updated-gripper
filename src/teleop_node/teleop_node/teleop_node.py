@@ -14,7 +14,7 @@ Control mapping:
 Recording control (only active when enable_recording:=true):
   R             → toggle recording on/off within current episode
   N             → save episode, start next
-  D             → discard episode, restart same index
+  Backspace     → discard episode, restart same index  (D was moved — conflicts with EE +y)
 
 Subscribes (relative, namespace-scoped):
   robot/ee_pose       geometry_msgs/PoseStamped   — to seed initial target pose
@@ -113,6 +113,20 @@ class TeleopNode(Node):
         self.declare_parameter('enable_recording', False)
         self._enable_recording = _b('enable_recording')
 
+        self.declare_parameter('robot_home_position', [330.0, 0.0, 160.0, 3.14159, 0.0, 0.0, 850.0])
+        _home_raw = list(
+            self.get_parameter('robot_home_position').get_parameter_value().double_array_value
+        )  # [x, y, z, roll, pitch, yaw (rad), gripper]
+        # Convert orientation to degrees — teleop's _target stores angles in degrees
+        self._home_target = [
+            _home_raw[0], _home_raw[1], _home_raw[2],
+            math.degrees(_home_raw[3]),
+            math.degrees(_home_raw[4]),
+            math.degrees(_home_raw[5]),
+        ]
+        self._home_gripper = _home_raw[6]
+        self._homing = False  # True while a move_home is in flight — prevents queuing duplicates
+
         self._cfg = cfg
         self._keyboard = KeyboardInput(cfg)
         # create the SpaceMouseInput object if use_spacemouse is True, otherwise None
@@ -139,12 +153,14 @@ class TeleopNode(Node):
         self._rec_save_client     = None
         self._rec_discard_client  = None
         self._rec_finalize_client = None
+        self._move_home_client    = None
 
         if self._enable_recording:
             self._rec_toggle_client   = self.create_client(Trigger, 'recorder/toggle_recording')
             self._rec_save_client     = self.create_client(Trigger, 'recorder/save_episode')
             self._rec_discard_client  = self.create_client(Trigger, 'recorder/discard_episode')
             self._rec_finalize_client = self.create_client(Trigger, 'recorder/finalize_dataset')
+            self._move_home_client    = self.create_client(Trigger, 'robot/move_home')
             self.get_logger().info(
                 'Recording mode enabled — R=toggle  N=save  D=discard  ESC=finalize+quit'
             )
@@ -217,11 +233,52 @@ class TeleopNode(Node):
 
     def _save_episode(self) -> None:
         self._is_recording = False
-        self._call_recorder(self._rec_save_client, 'save_episode')
+        if self._rec_save_client and self._rec_save_client.service_is_ready():
+            self._call_recorder(self._rec_save_client, 'save_episode')
+            self._reset_to_home()
+        else:
+            self.get_logger().warn('Recorder not ready — save skipped.')
 
     def _discard_episode(self) -> None:
         self._is_recording = False
-        self._call_recorder(self._rec_discard_client, 'discard_episode')
+        if self._rec_discard_client and self._rec_discard_client.service_is_ready():
+            self._call_recorder(self._rec_discard_client, 'discard_episode')
+            self._reset_to_home()
+        else:
+            self.get_logger().warn('Recorder not ready — discard skipped.')
+
+    def _reset_to_home(self) -> None:
+        """Snap the teleop target to home and command the robot to move there.
+        Guarded by _homing to prevent queuing multiple concurrent moves."""
+        if self._homing:
+            self.get_logger().warn('move_home already in flight — ignoring duplicate request.')
+            return
+        if not (self._move_home_client and self._move_home_client.service_is_ready()):
+            self.get_logger().warn('robot/move_home service not ready — skipping home reset.')
+            return
+
+        self._homing = True
+        self._target = list(self._home_target)
+        self._gripper = self._home_gripper
+        self.get_logger().info(
+            f'Resetting robot to home: xyz=({self._home_target[0]},{self._home_target[1]},'
+            f'{self._home_target[2]}) mm  '
+            f'rpy=({self._home_target[3]:.1f},{self._home_target[4]:.1f},'
+            f'{self._home_target[5]:.1f}) deg  gripper={self._home_gripper}'
+        )
+        future = self._move_home_client.call_async(Trigger.Request())
+        future.add_done_callback(self._on_move_home_done)
+
+    def _on_move_home_done(self, future) -> None:
+        self._homing = False
+        try:
+            res = future.result()
+            if res.success:
+                self.get_logger().info(f'[move_home] {res.message}')
+            else:
+                self.get_logger().warn(f'[move_home] failed: {res.message}')
+        except Exception as exc:
+            self.get_logger().error(f'[move_home] call failed: {exc}')
 
     def _finalize_dataset(self) -> None:
         self._is_recording = False
@@ -249,10 +306,10 @@ class TeleopNode(Node):
         recorder_callbacks: dict = {}
         if self._enable_recording:
             recorder_callbacks = {
-                pygame.K_r:      self._toggle_recording,
-                pygame.K_n:      self._save_episode,
-                pygame.K_d:      self._discard_episode,
-                pygame.K_ESCAPE: self._finalize_dataset,
+                pygame.K_r:         self._toggle_recording,
+                pygame.K_n:         self._save_episode,
+                pygame.K_BACKSPACE: self._discard_episode,
+                pygame.K_ESCAPE:    self._finalize_dataset,
             }
 
         # Wait until both robot topics have been received before starting control.

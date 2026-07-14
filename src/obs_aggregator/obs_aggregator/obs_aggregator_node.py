@@ -5,7 +5,7 @@ Subscribes (relative names, scoped by namespace):
   robot/joint_states      sensor_msgs/JointState       (from xarm_driver, 15 Hz)
   robot/ee_pose           geometry_msgs/PoseStamped    (from xarm_driver, 15 Hz)
   robot/gripper_pos       std_msgs/Float64             (from xarm_driver, 15 Hz)
-  camera/color/image_raw  sensor_msgs/Image BGR8       (from realsense2_camera, 15 Hz)
+  camera/color/image      sensor_msgs/Image RGB8 or BGR8 (from realsense2_camera)
 
 Publishes (relative name, scoped by namespace):
   observation/frame       cloudgripper_msgs/ObsFrame   (5 Hz)
@@ -37,19 +37,24 @@ from std_msgs.msg import Float64
 from cloudgripper_msgs.msg import ObsFrame
 
 
-def _bgr8_to_rgb8(msg: Image) -> Image:
-    """Return a new Image message with encoding changed from BGR8 to RGB8."""
-    arr = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.width, 3)
-    rgb = arr[:, :, ::-1].copy()  # BGR → RGB in-place channel swap
-    out = Image()
-    out.header = msg.header
-    out.height = msg.height
-    out.width = msg.width
-    out.encoding = 'rgb8'
-    out.is_bigendian = False
-    out.step = msg.width * 3
-    out.data = rgb.tobytes()
-    return out
+def _ensure_rgb8(msg: Image) -> Image:
+    """Return an rgb8 Image, converting from bgr8 only when needed."""
+    enc = msg.encoding.lower()
+    if enc == 'rgb8':
+        return msg
+    if enc in ('bgr8', 'bgr'):
+        arr = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.width, 3)
+        rgb = arr[:, :, ::-1].copy()
+        out = Image()
+        out.header = msg.header
+        out.height = msg.height
+        out.width = msg.width
+        out.encoding = 'rgb8'
+        out.is_bigendian = False
+        out.step = msg.width * 3
+        out.data = rgb.tobytes()
+        return out
+    raise ValueError(f'Unsupported image encoding: {msg.encoding!r} (expected rgb8 or bgr8)')
 
 
 class ObsAggregatorNode(Node):
@@ -69,13 +74,13 @@ class ObsAggregatorNode(Node):
         self._joints: list[float] | None = None    # (7,) radians
         self._ee_pose: list[float] | None = None   # (6,) x,y,z mm · roll,pitch,yaw rad
         self._gripper: float | None = None         # 0–850 raw
-        self._image: Image | None = None           # BGR8 sensor_msgs/Image
+        self._image: Image | None = None           # RGB8 or BGR8 sensor_msgs/Image
 
         # --- subscribers (relative → namespace-scoped) ---
         self.create_subscription(JointState,   'robot/joint_states',     self._on_joints,  1)
         self.create_subscription(PoseStamped,  'robot/ee_pose',          self._on_ee_pose, 1)
         self.create_subscription(Float64,      'robot/gripper_pos',      self._on_gripper, 1)
-        self.create_subscription(Image,        'camera/color/image_raw', self._on_image,   1)
+        self.create_subscription(Image,        'camera/color/image',     self._on_image,   1)
 
         # --- publisher ---
         self._pub = self.create_publisher(ObsFrame, 'observation/frame', 1)
@@ -145,8 +150,8 @@ class ObsAggregatorNode(Node):
             roll_norm = (ee[3] + 2 * math.pi) % (2 * math.pi)
             state = joints + ee[:3] + [roll_norm, ee[4], ee[5], gripper]  # length 14
 
-        # --- convert BGR8 → RGB8 ---
-        rgb_image = _bgr8_to_rgb8(self._image)
+        # --- ensure rgb8 (swap channels only if camera publishes bgr8) ---
+        rgb_image = _ensure_rgb8(self._image)
         rgb_image.header.stamp = now
 
         # --- publish ObsFrame ---

@@ -35,6 +35,7 @@ class XArmDriver:
             sys.exit(1)
 
         self.arm.set_state(state=0)  # sport state
+        self.arm.set_gripper_enable(True)  # re-enable after state reset
         self.arm.set_gripper_position(pos=self.xarm_gripper_pos, wait=True)
 
     def disconnect(self) -> None:

@@ -36,7 +36,7 @@ from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64, Float64MultiArray
-from std_srvs.srv import SetBool
+from std_srvs.srv import SetBool, Trigger
 
 from xarm_driver.driver import XArmDriver
 
@@ -71,16 +71,28 @@ class XArmDriverNode(Node):
         self.declare_parameter('publish_rate', 15.0)
         self.declare_parameter('gripper_deadband', 20.0)
         self.declare_parameter('servo_mode', False)
+        self.declare_parameter('robot_home_position', [330.0, 0.0, 160.0, 3.14159, 0.0, 0.0, 850.0])
 
         robot_ip = self.get_parameter('robot_ip').get_parameter_value().string_value
         self._robot_name = self.get_parameter('robot_name').get_parameter_value().string_value
         rate = self.get_parameter('publish_rate').get_parameter_value().double_value
         self._deadband = self.get_parameter('gripper_deadband').get_parameter_value().double_value
         self._servo_mode = self.get_parameter('servo_mode').get_parameter_value().bool_value
+        self._home_position = list(
+            self.get_parameter('robot_home_position').get_parameter_value().double_array_value
+        )  # [x, y, z, roll, pitch, yaw (rad), gripper]
+
+        # True while move_home is executing — blocks _on_action_cmd to avoid conflicts
+        self._resetting = False
 
         # --- driver ---
         self._driver = XArmDriver(robot_ip)
         self._driver.connect()
+
+        # Initial reset to home — runs in position mode before servo mode activates,
+        # so the state publisher starts only after the robot is at the home pose.
+        self._move_to_home_blocking()
+
         if self._servo_mode:
             self._driver.set_arm_mode(1)
             self.get_logger().info('Servo mode (mode 1) active — real-time streaming.')
@@ -104,6 +116,13 @@ class XArmDriverNode(Node):
             SetBool,
             'robot/set_servo_mode',
             self._on_set_servo_mode,
+        )
+
+        # --- move-to-home service ---
+        self._home_srv = self.create_service(
+            Trigger,
+            'robot/move_home',
+            self._on_move_home,
         )
 
         # --- state publish timer ---
@@ -156,6 +175,8 @@ class XArmDriverNode(Node):
     # ------------------------------------------------------------------
 
     def _on_action_cmd(self, msg: Float64MultiArray) -> None: # callback function for the action command, it will be called when the action command is received
+        if self._resetting:
+            return
         data = list(msg.data)
         if len(data) != 7: # check if the action command is a 7-vector: x,y,z mm  roll,pitch,yaw rad  gripper
             self.get_logger().error(
@@ -187,6 +208,53 @@ class XArmDriverNode(Node):
         # Gripper with dead-band
         if abs(gripper - self._driver.xarm_gripper_pos) > self._deadband:
             self._driver.set_xarm_gripper(gripper, wait=True)
+
+    # ------------------------------------------------------------------
+    # Move-home (shared logic used at startup and via service)
+    # ------------------------------------------------------------------
+
+    def _move_to_home_blocking(self) -> None:
+        """Move arm + gripper to home position in position mode (blocking)."""
+        hp = self._home_position
+        if len(hp) != 7:
+            self.get_logger().error(
+                f'robot_home_position must have 7 elements, got {len(hp)} — skipping init move.'
+            )
+            return
+        self.get_logger().info(
+            f'Moving to home position: xyz=({hp[0]},{hp[1]},{hp[2]}) mm  '
+            f'rpy=({hp[3]:.4f},{hp[4]:.4f},{hp[5]:.4f}) rad  gripper={hp[6]}'
+        )
+        self._driver.move_to(
+            hp[0], hp[1], hp[2], hp[3], hp[4], hp[5],
+            speed=100.0, mvacc=200.0,
+            wait=True, is_radian=True,
+        )
+        self._driver.set_xarm_gripper(hp[6], wait=True)
+        self.get_logger().info('Home position reached.')
+
+    def _on_move_home(self, _req: Trigger.Request, response: Trigger.Response) -> Trigger.Response:
+        """Block action_cmd, move arm+gripper to home position, then restore mode."""
+        self._resetting = True
+        try:
+            self._driver.set_arm_mode(0)
+            self._move_to_home_blocking()
+            if self._servo_mode:
+                self._driver.set_arm_mode(1)
+            hp = self._home_position
+            response.success = True
+            response.message = (
+                f'Reset to home: xyz=({hp[0]},{hp[1]},{hp[2]}) mm  '
+                f'rpy=({hp[3]:.4f},{hp[4]:.4f},{hp[5]:.4f}) rad  gripper={hp[6]}'
+            )
+            self.get_logger().info(f'[move_home] {response.message}')
+        except Exception as exc:
+            response.success = False
+            response.message = str(exc)
+            self.get_logger().error(f'[move_home] failed: {exc}')
+        finally:
+            self._resetting = False
+        return response
 
     # ------------------------------------------------------------------
     # Cleanup

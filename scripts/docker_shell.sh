@@ -7,6 +7,7 @@
 #
 # Options:
 #   --no-gpu      Disable GPU passthrough (default: enabled if available)
+#   --root        Run as root inside the container (needed for docker_setup.sh)
 #   --help        Show this help message
 #
 # On first run, the container will build the workspace automatically.
@@ -20,6 +21,7 @@ REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 IMAGE="cloudgripper_ros:humble"
 CONTAINER_NAME="cloudgripper_ros"
 USE_GPU="true"
+RUN_AS_ROOT="false"
 
 # ---------------------------------------------------------------------------
 # Argument parsing
@@ -27,6 +29,7 @@ USE_GPU="true"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --no-gpu) USE_GPU="false"; shift ;;
+        --root)   RUN_AS_ROOT="true"; shift ;;
         --help)
             sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
             exit 0 ;;
@@ -58,6 +61,14 @@ fi
 # ---------------------------------------------------------------------------
 # Run container
 # ---------------------------------------------------------------------------
+USER_FLAGS=()
+if [[ "$RUN_AS_ROOT" == "true" ]]; then
+    echo "[docker] Running as root (for apt install / first-time setup)."
+else
+    USER_FLAGS=(-u "$(id -u):$(id -g)")
+    echo "[docker] Running as host user $(id -u):$(id -g) (use --root for docker_setup.sh)."
+fi
+
 echo "[docker] Starting container '${CONTAINER_NAME}'..."
 echo "[docker] Workspace mounted at /workspace"
 echo "[docker] Run 'bash /workspace/scripts/docker_setup.sh' on first launch to build."
@@ -68,6 +79,7 @@ sudo docker run -it --rm \
     --network host \
     --privileged \
     "${GPU_FLAGS[@]}" \
+    "${USER_FLAGS[@]}" \
     -v /dev:/dev \
     -v "${REPO_ROOT}:/workspace" \
     -v /tmp/.X11-unix:/tmp/.X11-unix \

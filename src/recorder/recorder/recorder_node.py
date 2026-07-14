@@ -1,5 +1,6 @@
 """
-recorder_node — LeRobot v3 dataset writer for CloudGripper V2 teleop data collection.
+recorder_node — LeRobot dataset writer for CloudGripper V2 teleop data collection.
+Targets lerobot v0.4.4 (last release supporting Python 3.10).
 
 Subscribes:
   observation/frame    cloudgripper_msgs/ObsFrame   (from obs_aggregator)
@@ -33,6 +34,7 @@ Dataset create vs resume:
 """
 
 from pathlib import Path
+import shutil
 
 import numpy as np
 import rclpy
@@ -96,23 +98,26 @@ class RecorderNode(Node):
         self.declare_parameter('image_writer_threads', 4)
         self.declare_parameter('image_height', 480)
         self.declare_parameter('image_width', 640)
+        self.declare_parameter('push_to_hub', False)
 
         def _s(n): return self.get_parameter(n).get_parameter_value().string_value
         def _i(n): return self.get_parameter(n).get_parameter_value().integer_value
         def _f(n): return self.get_parameter(n).get_parameter_value().double_value
+        def _b(n): return self.get_parameter(n).get_parameter_value().bool_value
 
         dataset_root_str = _s('dataset_root')
         if not dataset_root_str:
             raise RuntimeError("Parameter 'dataset_root' must be set.")
 
-        self._repo_id       = _s('dataset_repo_id')
+        self._repo_id        = _s('dataset_repo_id')
         self._total_episodes = _i('total_episodes')
-        self._fps           = _f('fps')
-        self._dof           = _i('dof_mode')
-        self._task          = _s('task')
-        self._img_threads   = _i('image_writer_threads')
-        self._img_h         = _i('image_height')
-        self._img_w         = _i('image_width')
+        self._fps            = _f('fps')
+        self._dof            = _i('dof_mode')
+        self._task           = _s('task')
+        self._img_threads    = _i('image_writer_threads')
+        self._img_h          = _i('image_height')
+        self._img_w          = _i('image_width')
+        self._push_to_hub    = _b('push_to_hub')
 
         self._dataset_root = Path(dataset_root_str).expanduser().resolve()
 
@@ -148,18 +153,54 @@ class RecorderNode(Node):
     # Dataset init (create / resume)
     # ------------------------------------------------------------------
 
+    def _has_pending_frames(self) -> bool:
+        if self._dataset is None or self._dataset.episode_buffer is None:
+            return False
+        return self._dataset.episode_buffer.get('size', 0) > 0
+
+    def _has_episode_metadata(self) -> bool:
+        """True when meta/episodes contains at least one parquet file."""
+        episodes_dir = self._dataset_root / 'meta' / 'episodes'
+        if not episodes_dir.is_dir():
+            return False
+        return any(episodes_dir.rglob('*.parquet'))
+
+    def _dataset_is_resumable(self) -> bool:
+        """True when a locally recorded dataset has at least one fully saved episode."""
+        meta = self._dataset_root / 'meta'
+        return (
+            (meta / 'info.json').exists()
+            and (meta / 'tasks.parquet').exists()
+            and self._has_episode_metadata()
+        )
+
+    def _clear_incomplete_dataset(self) -> None:
+        """Remove a crashed/empty dataset that only has partial metadata."""
+        if not (self._dataset_root / 'meta' / 'info.json').exists():
+            return
+        if self._dataset_is_resumable():
+            return
+        self.get_logger().warn(
+            f'Incomplete or corrupted dataset at {self._dataset_root} '
+            f'— removing and starting fresh.'
+        )
+        shutil.rmtree(self._dataset_root)
+
+    def _fix_dataset_fps(self, dataset) -> None:
+        """PyAV video encoding requires integer fps; JSON stores it as float."""
+        dataset.meta.info['fps'] = int(round(dataset.meta.info['fps']))
+
     def _init_dataset(self) -> None:
         # Import here so lerobot is only required at runtime, not at import time.
         from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
-        info_path = self._dataset_root / 'meta' / 'info.json'
-        if info_path.exists():
-            dataset = LeRobotDataset.resume(
+        if self._dataset_is_resumable():
+            # v0.4.4: load existing dataset via constructor, then enable writers.
+            dataset = LeRobotDataset(
                 repo_id=self._repo_id,
                 root=self._dataset_root,
-                image_writer_processes=0,
-                image_writer_threads=self._img_threads,
             )
+            dataset.start_image_writer(0, self._img_threads)
             n = dataset.num_episodes
             self.get_logger().info(
                 f'Resumed dataset: {self._dataset_root}  ({n} episodes already on disk)'
@@ -169,22 +210,26 @@ class RecorderNode(Node):
                     f'Dataset already has {n}/{self._total_episodes} episodes. '
                     f'Nothing to record. Increase total_episodes or use a different dataset_root.'
                 )
+                self._fix_dataset_fps(dataset)
                 self._dataset = dataset
                 self._ready = False
                 return
         else:
+            self._clear_incomplete_dataset()
             features = _build_features(self._dof, self._img_h, self._img_w)
             dataset = LeRobotDataset.create(
                 repo_id=self._repo_id,
                 root=self._dataset_root,
-                fps=self._fps,
+                fps=int(round(self._fps)),
                 features=features,
                 robot_type='xarm',
                 use_videos=True,
+                image_writer_processes=0,
                 image_writer_threads=self._img_threads,
             )
             self.get_logger().info(f'Created new dataset: {self._dataset_root}')
 
+        self._fix_dataset_fps(dataset)
         self._dataset = dataset
         self._ready = True
 
@@ -212,12 +257,14 @@ class RecorderNode(Node):
         if self._pending_frame is not None:
             frame = self._pending_frame
             frame['action'] = action
+            frame['task'] = self._task
             self._dataset.add_frame(frame)
 
         # Park current frame as pending (will be labeled when next frame arrives)
         self._pending_frame = {
             'observation.state': state,
             'observation.images.front': img,
+            'task': self._task,
             # 'action' filled in on next callback
         }
 
@@ -254,8 +301,9 @@ class RecorderNode(Node):
         self._recording = False
         self._pending_frame = None  # drop last unlabeled frame
 
-        if self._dataset.has_pending_frames():
-            self._dataset.save_episode(task=self._task)
+        if self._has_pending_frames():
+            self._fix_dataset_fps(self._dataset)
+            self._dataset.save_episode()
             n = self._dataset.num_episodes
             self.get_logger().info(
                 f'Episode saved. {n}/{self._total_episodes}'
@@ -279,7 +327,7 @@ class RecorderNode(Node):
     def _svc_discard_episode(self, _req, res: Trigger.Response) -> Trigger.Response:
         self._recording = False
         self._pending_frame = None
-        if self._dataset is not None:
+        if self._has_pending_frames():
             self._dataset.clear_episode_buffer()
         n = self._dataset.num_episodes if self._dataset else 0
         self.get_logger().info(
@@ -307,15 +355,25 @@ class RecorderNode(Node):
             rclpy.shutdown()
             return
 
-        if self._dataset.has_pending_frames():
+        if self._has_pending_frames():
             self.get_logger().info('Saving in-progress episode before finalizing...')
-            self._dataset.save_episode(task=self._task)
+            self._fix_dataset_fps(self._dataset)
+            self._dataset.save_episode()
 
         self.get_logger().info(
             f'Finalizing dataset — {self._dataset.num_episodes} episodes total.'
         )
         self._dataset.finalize()
-        self.get_logger().info('Dataset finalized. Shutting down recorder node.')
+        self.get_logger().info('Dataset finalized.')
+
+        if self._push_to_hub:
+            self.get_logger().info(f'Uploading dataset to HuggingFace Hub: {self._repo_id} ...')
+            self._dataset.push_to_hub()
+            self.get_logger().info('Upload complete.')
+        else:
+            self.get_logger().info('push_to_hub=false — dataset saved locally only.')
+
+        self.get_logger().info('Shutting down recorder node.')
         rclpy.shutdown()
 
     # ------------------------------------------------------------------

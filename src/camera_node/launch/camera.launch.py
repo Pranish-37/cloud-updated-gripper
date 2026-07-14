@@ -13,7 +13,7 @@ Args (launch arguments):
 
 Multi-robot usage: include this file inside a GroupAction + PushRosNamespace block
 in the top-level full_system.launch.py. All nodes inherit the parent namespace, so
-topics are scoped automatically (e.g. /robot_1/camera/color/image_raw).
+topics are scoped automatically (e.g. /robot_1/camera/color/image).
 Standalone launch (single robot, no namespace):
   ros2 launch camera_node camera.launch.py camera_serial:=843112070951
 """
@@ -49,7 +49,7 @@ def generate_launch_description():
 
         # realsense2_camera node — always launched
         # Topics published (relative, scoped by namespace):
-        #   camera/color/image_raw   sensor_msgs/Image  BGR8  @ color_fps Hz
+        #   camera/color/image       sensor_msgs/Image  BGR8  @ color_fps Hz
         Node(
             package='realsense2_camera',
             executable='realsense2_camera_node',

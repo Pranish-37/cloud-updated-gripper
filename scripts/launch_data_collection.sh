@@ -16,6 +16,7 @@
 #   --task <string>       Task description string    (default: from YAML)
 #   --ip <ip>             Robot IP address           (default: 192.168.0.244)
 #   --no-spacemouse       Use keyboard rotation only
+#   --push-to-hub         Upload dataset to HuggingFace after collection (default: off)
 #   --help                Show this help message
 #
 # Examples:
@@ -41,6 +42,9 @@
 
 set -euo pipefail
 
+# Dataset files land on the host mount; keep them world-readable.
+umask 022
+
 # ---------------------------------------------------------------------------
 # Defaults — overridable via CLI flags
 # ---------------------------------------------------------------------------
@@ -51,6 +55,7 @@ REPO_ID=""
 EPISODES=""
 DOF_MODE=""
 TASK=""
+PUSH_TO_HUB=""
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -69,6 +74,7 @@ while [[ $# -gt 0 ]]; do
         --task)          TASK="$2";          shift 2 ;;
         --ip)            ROBOT_IP="$2";      shift 2 ;;
         --no-spacemouse) USE_SPACEMOUSE="false"; shift ;;
+        --push-to-hub)   PUSH_TO_HUB="true";    shift ;;
         --help)
             sed -n '2,36p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
             exit 0 ;;
@@ -131,7 +137,7 @@ echo "╠═══════════════════════�
 echo "║  Controls (pygame window)                                    ║"
 echo "║    R          toggle recording on/off                        ║"
 echo "║    N          save episode, start next                       ║"
-echo "║    D          discard episode, restart same index            ║"
+echo "║    Backspace  discard episode, restart same index            ║"
 echo "║    ESC        finalize dataset and quit                      ║"
 echo "║    W/S A/D    EE +x/-x  +y/-y                               ║"
 echo "║    Space/Ctrl EE +z/-z                                       ║"
@@ -148,28 +154,43 @@ echo ""
 # ---------------------------------------------------------------------------
 LAUNCH_ARGS=()
 
-[[ -n "$DATASET_ROOT" ]] && LAUNCH_ARGS+=("dataset_root:=${DATASET_ROOT}")
-[[ -n "$REPO_ID"      ]] && LAUNCH_ARGS+=("dataset_repo_id:=${REPO_ID}")
-[[ -n "$EPISODES"     ]] && LAUNCH_ARGS+=("total_episodes:=${EPISODES}")
-[[ -n "$DOF_MODE"     ]] && LAUNCH_ARGS+=("dof_mode:=${DOF_MODE}")
-[[ -n "$TASK"         ]] && LAUNCH_ARGS+=("task:=${TASK}")
+# Use if-blocks instead of [[ ]] && to avoid set -e triggering on false conditions
+if [[ -n "$DATASET_ROOT" ]]; then LAUNCH_ARGS+=("dataset_root:=${DATASET_ROOT}"); fi
+if [[ -n "$REPO_ID"      ]]; then LAUNCH_ARGS+=("dataset_repo_id:=${REPO_ID}");   fi
+if [[ -n "$EPISODES"     ]]; then LAUNCH_ARGS+=("total_episodes:=${EPISODES}");   fi
+if [[ -n "$DOF_MODE"     ]]; then LAUNCH_ARGS+=("dof_mode:=${DOF_MODE}");         fi
+if [[ -n "$TASK"         ]]; then LAUNCH_ARGS+=("task:=${TASK}");                 fi
+if [[ -n "$PUSH_TO_HUB"  ]]; then LAUNCH_ARGS+=("push_to_hub:=${PUSH_TO_HUB}");  fi
 
-# robot_ip and use_spacemouse are node parameters, not launch arguments —
-# pass them via --ros-args appended to the launch call isn't possible directly.
-# Instead, patch them via the launch extras mechanism or just note they come from YAML.
-# For now, warn the user if they differ from the YAML default.
-YAML_IP=$(grep '^robot_ip:' "$CONFIG_FILE" | awk '{print $2}' | tr -d '"')
+# Warn if CLI --ip differs from what is in the YAML (key is now indented under ros__parameters)
+YAML_IP=$(grep 'robot_ip:' "$CONFIG_FILE" | awk '{print $2}' | tr -d '"' || true)
 if [[ -n "$YAML_IP" && "$ROBOT_IP" != "$YAML_IP" ]]; then
     echo "[WARN] --ip ${ROBOT_IP} differs from robot_ip in YAML (${YAML_IP})."
     echo "       Update config/data_collection.yaml to persist this change."
     echo ""
 fi
 
-YAML_SM=$(grep '^use_spacemouse:' "$CONFIG_FILE" | awk '{print $2}')
+YAML_SM=$(grep 'use_spacemouse:' "$CONFIG_FILE" | awk '{print $2}' || true)
 if [[ "$USE_SPACEMOUSE" == "false" && "$YAML_SM" != "false" ]]; then
     echo "[WARN] --no-spacemouse passed but use_spacemouse: true in YAML."
     echo "       Add 'use_spacemouse: false' to config/data_collection.yaml to persist."
     echo ""
+fi
+
+# ---------------------------------------------------------------------------
+# lerobot PYTHONPATH — ros2 launch does not inherit the interactive shell's
+# PYTHONPATH set by docker_rc.bash, so we must export it explicitly here.
+# ---------------------------------------------------------------------------
+LEROBOT_WS="/workspace/lerobot"
+if [[ -d "${LEROBOT_WS}/src/lerobot" ]]; then
+    export PYTHONPATH="${LEROBOT_WS}/src:${PYTHONPATH:-}"
+    echo "[data_collection] lerobot PYTHONPATH (src layout): ${LEROBOT_WS}/src"
+elif [[ -d "${LEROBOT_WS}/lerobot" ]]; then
+    export PYTHONPATH="${LEROBOT_WS}:${PYTHONPATH:-}"
+    echo "[data_collection] lerobot PYTHONPATH (flat layout): ${LEROBOT_WS}"
+else
+    echo "[WARN] /workspace/lerobot not found — recorder_node will fail to import lerobot."
+    echo "       Run: bash /workspace/scripts/docker_setup.sh"
 fi
 
 # ---------------------------------------------------------------------------

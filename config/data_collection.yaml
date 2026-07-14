@@ -3,75 +3,81 @@
 # Edit this file before starting a collection session.
 # All parameters can be overridden on the command line:
 #   ros2 launch cloudgripper_ros2 data_collection.launch.py total_episodes:=50
+#
+# NOTE: The /**  wildcard makes every key available to all nodes via --params-file.
 
-# ---------------------------------------------------------------------------
-# Dataset
-# ---------------------------------------------------------------------------
-dataset_root: "/tmp/cloudgripper_datasets/my_dataset"   # absolute path on disk
-dataset_repo_id: "CloudGripper/my-dataset"               # HuggingFace-style repo id
-total_episodes: 100                                       # stop after this many episodes
-task: ""                                                  # task description string (optional)
+/**:
+  ros__parameters:
 
-# ---------------------------------------------------------------------------
-# Recording
-# ---------------------------------------------------------------------------
-fps: 5.0           # recording frame rate (must match obs_aggregator publish_rate)
-dof_mode: 6        # 3 = 3-DoF (ee_xyz + gripper), 6 = 6-DoF (ee_xyz + rpy + gripper)
-image_height: 480
-image_width: 640
-image_writer_threads: 4
+    # ---------------------------------------------------------------------------
+    # Dataset
+    # ---------------------------------------------------------------------------
+    dataset_root: "/workspace/data/rgb_stacking"   # absolute path on disk
+    dataset_repo_id: "CloudGripper/rgb_stacking"                           # HuggingFace-style repo id
+    total_episodes: 100                                                    # stop after this many episodes
+    task: "rgb_stacking"                                                   # task description string (optional)
+    push_to_hub: false                                                     # set true to upload to HuggingFace after collection
 
-# ---------------------------------------------------------------------------
-# Robot
-# ---------------------------------------------------------------------------
-robot_ip: "192.168.0.244"
+    # ---------------------------------------------------------------------------
+    # Recording
+    # ---------------------------------------------------------------------------
+    fps: 5.0                # recording frame rate (must match obs_aggregator publish_rate)
+    dof_mode: 3             # 3 = 3-DoF (ee_xyz + gripper), 6 = 6-DoF (ee_xyz + rpy + gripper)
+    image_height: 1080
+    image_width: 1920
+    image_writer_threads: 4
 
-# ---------------------------------------------------------------------------
-# Camera — realsense2_camera standard parameter set
-# ---------------------------------------------------------------------------
-camera_serial: "843112070951"
+    # ---------------------------------------------------------------------------
+    # Camera — realsense2_camera standard parameter set
+    # ---------------------------------------------------------------------------
+    serial_no: "843112070951"
 
-# Stream geometry
-color_width:  640
-color_height: 480
-color_fps:    15.0
+    # Stream geometry (realsense2_camera v4.x — profile string replaces
+    # deprecated color_width / color_height / color_fps).
+    enable_color:  true
+    enable_depth:  false
+    enable_infra1: false
+    enable_infra2: false
+    rgb_camera.color_profile: "1920x1080x15"
+    rgb_camera.color_format: "RGB8"
+    realsense_node_name: "camera"   # ae_awb_controller target node
 
-# Pixel format published on /camera/color/image_raw.
-# "BGR8" is the realsense2_camera default; obs_aggregator converts to RGB8.
-# Set to "RGB8" here if you want to skip that conversion.
-color_format: "BGR8"
+    robot_ip: "192.168.0.244"
+    robot_home_position: [330.0, 0.0, 160.0, 3.14159, 0.0, 0.0, 850.0]  # [x, y, z, roll, pitch, yaw (rad), gripper]
+    servo_mode: true                # xarm_driver: low-latency teleop streaming
 
-# Auto-exposure / auto-white-balance
-# At startup both are enabled so the camera can converge.
-# After convergence call:  ros2 service call /camera/lock_exposure std_srvs/srv/Trigger
-# The ae_awb_controller_node then snapshots current values and disables both.
-color_auto_exposure:      true
-color_auto_white_balance: true
+    # Auto-exposure / auto-white-balance
+    # At startup both are enabled so the camera can converge.
+    # After convergence call:  ros2 service call /camera/lock_exposure std_srvs/srv/Trigger
+    # The ae_awb_controller_node then snapshots current values and disables both.
+    color_auto_exposure:      true
+    color_auto_white_balance: true
 
-# Manual override values — applied when the auto flags above are false.
-# Leave at -1 to let realsense use its last auto-converged value after locking.
-# Typical converged values for indoor lab lighting:
-#   exposure ~166 µs,  gain ~64,  white_balance ~4600 K
-color_exposure:      -1    # µs;  valid range depends on fps (e.g. 1–10000 at 15 fps)
-color_gain:          -1    # raw; valid range 16–248
-color_white_balance: -1    # K;   valid range ~2800–6500
+    # Manual override values — applied when the auto flags above are false.
+    # Leave at -1 to let realsense use its last auto-converged value after locking.
+    # Typical converged values for indoor lab lighting:
+    #   exposure ~166 µs,  gain ~64,  white_balance ~4600 K
+    color_exposure:      -1    # µs;  valid range depends on fps (e.g. 1–10000 at 15 fps)
+    color_gain:          -1    # raw; valid range 16–248
+    color_white_balance: -1    # K;   valid range ~2800–6500
 
-# ---------------------------------------------------------------------------
-# Teleop
-# ---------------------------------------------------------------------------
-control_hz: 50.0
-translation_speed: 50.0
-rotation_speed: 10.0
-use_spacemouse: true
-spacemouse_rotation_speed: 30.0
-spacemouse_deadzone: 0.05
-invert_x: true
-invert_y: true
-invert_roll: false
-invert_pitch: false
-invert_yaw: true
+    # ---------------------------------------------------------------------------
+    # Teleop
+    # ---------------------------------------------------------------------------
+    control_hz: 50.0
+    translation_speed: 50.0
+    rotation_speed: 10.0
+    use_spacemouse: true
+    spacemouse_rotation_speed: 30.0
+    spacemouse_deadzone: 0.05
+    invert_x: true
+    invert_y: true
+    invert_roll: false
+    invert_pitch: false
+    invert_yaw: true
+    enable_recording: true          # teleop_node: expose recorder service key bindings
 
-# ---------------------------------------------------------------------------
-# Obs aggregator
-# ---------------------------------------------------------------------------
-obs_publish_rate: 5.0   # Hz — keep in sync with fps above
+    # ---------------------------------------------------------------------------
+    # Obs aggregator
+    # ---------------------------------------------------------------------------
+    publish_rate: 5.0   # Hz — keep in sync with fps above

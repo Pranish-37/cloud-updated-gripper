@@ -75,7 +75,7 @@ def generate_launch_description():
             package='camera_node',
             executable='ae_awb_controller_node',
             name='ae_awb_controller',
-            parameters=[{'realsense_node_name': camera_name}],
+            parameters=[{'realsense_node_name': [camera_name, '/', camera_name]}],
             output='screen',
             condition=IfCondition(enable_ae_awb_lock), # skip the controller node if enable_ae_awb_lock is False
         ),

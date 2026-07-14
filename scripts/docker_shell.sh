@@ -66,12 +66,18 @@ if [[ "$RUN_AS_ROOT" == "true" ]]; then
     echo "[docker] Running as root (for apt install / first-time setup)."
 else
     USER_FLAGS=(-u "$(id -u):$(id -g)")
-    echo "[docker] Running as host user $(id -u):$(id -g) (use --root for docker_setup.sh)."
+    echo "[docker] Running as host user $(id -u):$(id -g)."
+    echo "[docker] Run: bash /workspace/scripts/docker_setup.sh"
 fi
 
 echo "[docker] Starting container '${CONTAINER_NAME}'..."
 echo "[docker] Workspace mounted at /workspace"
 echo "[docker] Run 'bash /workspace/scripts/docker_setup.sh' on first launch to build."
+if [[ "$RUN_AS_ROOT" == "true" ]]; then
+    echo "[docker] (--root: apt install enabled; optional — image already has ROS packages.)"
+else
+    echo "[docker] (Use --root only if you need to apt-install additional system packages.)"
+fi
 echo ""
 
 sudo docker run -it --rm \

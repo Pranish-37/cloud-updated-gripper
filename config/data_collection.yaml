@@ -40,7 +40,7 @@
     enable_infra2: false
     rgb_camera.color_profile: "1920x1080x15"
     rgb_camera.color_format: "RGB8"
-    realsense_node_name: "camera"   # ae_awb_controller target node
+    realsense_node_name: "camera/camera"   # ae_awb_controller → /camera/camera/set_parameters
 
     robot_ip: "192.168.0.244"
     robot_home_position: [330.0, 0.0, 160.0, 3.14159, 0.0, 0.0, 850.0]  # [x, y, z, roll, pitch, yaw (rad), gripper]

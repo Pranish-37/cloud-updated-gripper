@@ -14,7 +14,7 @@
 #   --episodes <n>        Total episodes to collect  (default: from YAML)
 #   --dof <3|6>           DoF mode                   (default: from YAML)
 #   --task <string>       Task description string    (default: from YAML)
-#   --ip <ip>             Robot IP address           (default: 192.168.0.244)
+#   --ip <ip>             Robot IP address           (default: from YAML)
 #   --no-spacemouse       Use keyboard rotation only
 #   --push-to-hub         Upload dataset to HuggingFace after collection (default: off)
 #   --help                Show this help message
@@ -48,8 +48,8 @@ umask 022
 # ---------------------------------------------------------------------------
 # Defaults — overridable via CLI flags
 # ---------------------------------------------------------------------------
-ROBOT_IP="192.168.0.244"
-USE_SPACEMOUSE="true"
+ROBOT_IP=""           # empty = use YAML value
+USE_SPACEMOUSE=""     # empty = use YAML value; set to "false" via --no-spacemouse
 DATASET_ROOT=""       # empty = use YAML value
 REPO_ID=""
 EPISODES=""
@@ -128,7 +128,14 @@ echo "╔═══════════════════════�
 echo "║            CloudGripper V2 — Data Collection                ║"
 echo "╠══════════════════════════════════════════════════════════════╣"
 printf  "║  config    : %-49s║\n" "config/data_collection.yaml"
-printf  "║  robot ip  : %-49s║\n" "${ROBOT_IP}"
+DISPLAY_IP="${ROBOT_IP:-$(grep 'robot_ip:' "$CONFIG_FILE" | awk '{print $2}' | tr -d '"' || true)}"
+printf  "║  robot ip  : %-49s║\n" "${DISPLAY_IP}"
+if [[ -n "$USE_SPACEMOUSE" ]]; then
+    printf "║  spacemouse: %-49s║\n" "${USE_SPACEMOUSE}"
+else
+    DISPLAY_SM="$(grep 'use_spacemouse:' "$CONFIG_FILE" | awk '{print $2}' || true)"
+    printf "║  spacemouse: %-49s║\n" "${DISPLAY_SM:-true}"
+fi
 [[ -n "$DATASET_ROOT" ]] && printf "║  dataset   : %-49s║\n" "${DATASET_ROOT}"
 [[ -n "$EPISODES"     ]] && printf "║  episodes  : %-49s║\n" "${EPISODES}"
 [[ -n "$DOF_MODE"     ]] && printf "║  dof       : %-49s║\n" "${DOF_MODE}"
@@ -161,21 +168,8 @@ if [[ -n "$EPISODES"     ]]; then LAUNCH_ARGS+=("total_episodes:=${EPISODES}"); 
 if [[ -n "$DOF_MODE"     ]]; then LAUNCH_ARGS+=("dof_mode:=${DOF_MODE}");         fi
 if [[ -n "$TASK"         ]]; then LAUNCH_ARGS+=("task:=${TASK}");                 fi
 if [[ -n "$PUSH_TO_HUB"  ]]; then LAUNCH_ARGS+=("push_to_hub:=${PUSH_TO_HUB}");  fi
-
-# Warn if CLI --ip differs from what is in the YAML (key is now indented under ros__parameters)
-YAML_IP=$(grep 'robot_ip:' "$CONFIG_FILE" | awk '{print $2}' | tr -d '"' || true)
-if [[ -n "$YAML_IP" && "$ROBOT_IP" != "$YAML_IP" ]]; then
-    echo "[WARN] --ip ${ROBOT_IP} differs from robot_ip in YAML (${YAML_IP})."
-    echo "       Update config/data_collection.yaml to persist this change."
-    echo ""
-fi
-
-YAML_SM=$(grep 'use_spacemouse:' "$CONFIG_FILE" | awk '{print $2}' || true)
-if [[ "$USE_SPACEMOUSE" == "false" && "$YAML_SM" != "false" ]]; then
-    echo "[WARN] --no-spacemouse passed but use_spacemouse: true in YAML."
-    echo "       Add 'use_spacemouse: false' to config/data_collection.yaml to persist."
-    echo ""
-fi
+if [[ -n "$ROBOT_IP"     ]]; then LAUNCH_ARGS+=("robot_ip:=${ROBOT_IP}");         fi
+if [[ -n "$USE_SPACEMOUSE" ]]; then LAUNCH_ARGS+=("use_spacemouse:=${USE_SPACEMOUSE}"); fi
 
 # ---------------------------------------------------------------------------
 # lerobot PYTHONPATH — ros2 launch does not inherit the interactive shell's

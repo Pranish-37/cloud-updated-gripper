@@ -10,9 +10,9 @@ Mirrors the LeRobot RealSenseCameraConfig convergence + snapshot logic:
      SetParameters service — freezing the values at the converged snapshot.
 
 Parameters:
-  realsense_node_name  (str, default 'camera')
-      The node name used for realsense2_camera. The SetParameters service is
-      called at '<realsense_node_name>/set_parameters'.
+  realsense_node_name  (str, default 'camera/camera')
+      Relative path to the realsense2_camera node (namespace/name). The
+      SetParameters service is called at '<realsense_node_name>/set_parameters'.
 """
 
 import rclpy
@@ -26,7 +26,7 @@ class AeAwbControllerNode(Node):
     def __init__(self):
         super().__init__('ae_awb_controller')
 
-        self.declare_parameter('realsense_node_name', 'camera')
+        self.declare_parameter('realsense_node_name', 'camera/camera')
         rs_name = self.get_parameter('realsense_node_name').get_parameter_value().string_value
 
         # Fully-qualified service paths on the realsense2_camera node

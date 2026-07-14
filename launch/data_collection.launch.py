@@ -3,11 +3,13 @@ data_collection.launch.py — full teleop data collection stack.
 
 All session parameters live in config/data_collection.yaml.
 This launch file only wires nodes together; CLI launch args override a
-small subset (dataset path, episodes, dof, task, push_to_hub).
+small subset (dataset path, episodes, dof, task, push_to_hub, robot_ip,
+use_spacemouse).
 
 Usage:
   ros2 launch launch/data_collection.launch.py
   ros2 launch launch/data_collection.launch.py total_episodes:=50 dof_mode:=3
+  ros2 launch launch/data_collection.launch.py robot_ip:=192.168.0.245 use_spacemouse:=false
 """
 
 from pathlib import Path
@@ -38,6 +40,8 @@ def generate_launch_description():
     dataset_repo_id = LaunchConfiguration('dataset_repo_id')
     task            = LaunchConfiguration('task')
     push_to_hub     = LaunchConfiguration('push_to_hub')
+    robot_ip        = LaunchConfiguration('robot_ip')
+    use_spacemouse  = LaunchConfiguration('use_spacemouse')
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -52,6 +56,11 @@ def generate_launch_description():
             'task', default_value=str(cfg.get('task', ''))),
         DeclareLaunchArgument(
             'push_to_hub', default_value=str(cfg.get('push_to_hub', False)).lower()),
+        DeclareLaunchArgument(
+            'robot_ip', default_value=str(cfg.get('robot_ip', '192.168.0.244'))),
+        DeclareLaunchArgument(
+            'use_spacemouse',
+            default_value=str(cfg.get('use_spacemouse', True)).lower()),
 
         Node(
             package='realsense2_camera',
@@ -74,7 +83,10 @@ def generate_launch_description():
             package='xarm_driver',
             executable='xarm_driver_node',
             name='xarm_driver_node',
-            parameters=[_CONFIG],
+            parameters=[
+                _CONFIG,
+                {'robot_ip': robot_ip},
+            ],
             output='screen',
         ),
 
@@ -116,7 +128,10 @@ def generate_launch_description():
             package='teleop_node',
             executable='teleop_node',
             name='teleop_node',
-            parameters=[_CONFIG],
+            parameters=[
+                _CONFIG,
+                {'use_spacemouse': use_spacemouse},
+            ],
             output='screen',
         ),
     ])

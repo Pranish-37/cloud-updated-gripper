@@ -5,52 +5,62 @@
 # Run this ONCE after launching the container for the first time:
 #   bash /workspace/scripts/docker_setup.sh
 #
-# This script will:
-#   1. Install required ROS 2 apt packages
-#   2. Install Python dependencies (requirements.txt)
-#   3. Clone lerobot to /workspace/lerobot and pip install -e (editable)
-#   4. Build the colcon workspace
+# Works as the default (non-root) container user — apt steps are skipped
+# because the Docker image already includes ROS packages. Use
+# ./scripts/docker_shell.sh --root only if you need to apt-install extras.
 # =============================================================================
 
 set -euo pipefail
 
 WORKSPACE="/workspace"
 ROS_DISTRO="${ROS_DISTRO:-humble}"
+AS_ROOT=false
+[[ "$(id -u)" -eq 0 ]] && AS_ROOT=true
 
 echo ""
 echo "============================================================"
 echo " CloudGripper V2 — Docker first-time setup"
 echo " ROS distro : ${ROS_DISTRO}"
 echo " Workspace  : ${WORKSPACE}"
+echo " User       : $(id -un 2>/dev/null || echo "uid $(id -u)") (root=${AS_ROOT})"
 echo "============================================================"
 echo ""
 
 # ---------------------------------------------------------------------------
-# 1. ROS 2 apt packages
+# 1. ROS 2 apt packages (root only — already baked into the Docker image)
 # ---------------------------------------------------------------------------
-echo "[setup] Installing ROS 2 apt packages..."
-apt-get update -q
-apt-get install -y -q \
-    ros-${ROS_DISTRO}-rclpy \
-    ros-${ROS_DISTRO}-std-msgs \
-    ros-${ROS_DISTRO}-std-srvs \
-    ros-${ROS_DISTRO}-sensor-msgs \
-    ros-${ROS_DISTRO}-geometry-msgs \
-    ros-${ROS_DISTRO}-rcl-interfaces \
-    ros-${ROS_DISTRO}-realsense2-camera \
-    ros-${ROS_DISTRO}-launch-ros \
-    ros-${ROS_DISTRO}-rosidl-default-generators \
-    ros-${ROS_DISTRO}-rosidl-default-runtime \
-    libspnav-dev \
-    libhidapi-hidraw0 \
-    libhidapi-libusb0
-echo "[setup] ROS 2 packages installed."
+if [[ "$AS_ROOT" == true ]]; then
+    echo "[setup] Installing ROS 2 apt packages..."
+    apt-get update -q
+    apt-get install -y -q \
+        ros-${ROS_DISTRO}-rclpy \
+        ros-${ROS_DISTRO}-std-msgs \
+        ros-${ROS_DISTRO}-std-srvs \
+        ros-${ROS_DISTRO}-sensor-msgs \
+        ros-${ROS_DISTRO}-geometry-msgs \
+        ros-${ROS_DISTRO}-rcl-interfaces \
+        ros-${ROS_DISTRO}-realsense2-camera \
+        ros-${ROS_DISTRO}-launch-ros \
+        ros-${ROS_DISTRO}-rosidl-default-generators \
+        ros-${ROS_DISTRO}-rosidl-default-runtime \
+        libspnav-dev \
+        libhidapi-hidraw0 \
+        libhidapi-libusb0
+    echo "[setup] ROS 2 packages installed."
+else
+    echo "[setup] Skipping apt install (not root)."
+    echo "         ROS packages are already in the cloudgripper_ros:humble image."
+    echo "         To install extra apt packages, re-enter with:"
+    echo "           ./scripts/docker_shell.sh --root"
+fi
 
 # ---------------------------------------------------------------------------
 # 2. Python packages
 # ---------------------------------------------------------------------------
 echo "[setup] Installing Python packages..."
-apt-get install -y -q python3-pip
+if [[ "$AS_ROOT" == true ]]; then
+    apt-get install -y -q python3-pip
+fi
 pip3 install --quiet -r "${WORKSPACE}/requirements.txt"
 echo "[setup] Python packages installed."
 

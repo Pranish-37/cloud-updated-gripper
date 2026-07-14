@@ -9,7 +9,12 @@ Control mapping:
   SpaceMouse    → roll/pitch/yaw (when use_spacemouse:=true)
   Q             → gripper open
   E             → gripper close
-  Esc           → stop
+  Esc           → stop  [+ finalize dataset when enable_recording:=true]
+
+Recording control (only active when enable_recording:=true):
+  R             → toggle recording on/off within current episode
+  N             → save episode, start next
+  D             → discard episode, restart same index
 
 Subscribes (relative, namespace-scoped):
   robot/ee_pose       geometry_msgs/PoseStamped   — to seed initial target pose
@@ -17,6 +22,12 @@ Subscribes (relative, namespace-scoped):
 
 Publishes (relative, namespace-scoped):
   policy/action_cmd   std_msgs/Float64MultiArray  (7-vec: x,y,z mm · roll,pitch,yaw rad · gripper)
+
+Calls (when enable_recording:=true):
+  recorder/toggle_recording   std_srvs/Trigger
+  recorder/save_episode       std_srvs/Trigger
+  recorder/discard_episode    std_srvs/Trigger
+  recorder/finalize_dataset   std_srvs/Trigger
 
 Parameters:
   control_hz          (float, default 50.0)
@@ -28,6 +39,7 @@ Parameters:
   invert_x / invert_y       (bool,  default True)
   invert_roll/pitch/yaw     (bool,  default False)
   roll/pitch/yaw_scale      (float, default 1.0)
+  enable_recording    (bool,  default False) — enable R/N/D/ESC recorder key bindings
 
 Note: xarm_driver_node must be started with servo_mode:=true for real-time response.
 """
@@ -35,10 +47,12 @@ Note: xarm_driver_node must be started with servo_mode:=true for real-time respo
 import math
 import time
 
+import pygame
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import Float64, Float64MultiArray
+from std_srvs.srv import Trigger
 
 from teleop_node.input_handler import TeleopConfig, KeyboardInput, SpaceMouseInput
 
@@ -96,6 +110,9 @@ class TeleopNode(Node):
             yaw_scale                 = _f('yaw_scale'),
         )
 
+        self.declare_parameter('enable_recording', False)
+        self._enable_recording = _b('enable_recording')
+
         self._cfg = cfg
         self._keyboard = KeyboardInput(cfg)
         # create the SpaceMouseInput object if use_spacemouse is True, otherwise None
@@ -107,18 +124,35 @@ class TeleopNode(Node):
         self._target_seeded = False   # True once ee_pose received
         self._gripper_seeded = False  # True once gripper_pos received
 
+        # recording state (mirrors recorder_node state for HUD display)
+        self._is_recording = False
+
         # --- subscribers to seed initial pose ---
-        # send the end effector pose and the gripper position to the TeleopNode
         self.create_subscription(PoseStamped, 'robot/ee_pose', self._on_ee_pose, 1)
-        # send the gripper position to the TeleopNode
-        self.create_subscription(Float64, 'robot/gripper_pos', self._on_gripper, 1) # queue size is 1
+        self.create_subscription(Float64, 'robot/gripper_pos', self._on_gripper, 1)
 
-        # --- publisher --- send the action command to the action node
-        self._pub = self.create_publisher(Float64MultiArray, 'policy/action_cmd', 1) # queue size is 1
+        # --- publisher ---
+        self._pub = self.create_publisher(Float64MultiArray, 'policy/action_cmd', 1)
 
-        self.get_logger().info( # log the TeleopNode is ready
+        # --- recorder service clients (only created when enable_recording is True) ---
+        self._rec_toggle_client   = None
+        self._rec_save_client     = None
+        self._rec_discard_client  = None
+        self._rec_finalize_client = None
+
+        if self._enable_recording:
+            self._rec_toggle_client   = self.create_client(Trigger, 'recorder/toggle_recording')
+            self._rec_save_client     = self.create_client(Trigger, 'recorder/save_episode')
+            self._rec_discard_client  = self.create_client(Trigger, 'recorder/discard_episode')
+            self._rec_finalize_client = self.create_client(Trigger, 'recorder/finalize_dataset')
+            self.get_logger().info(
+                'Recording mode enabled — R=toggle  N=save  D=discard  ESC=finalize+quit'
+            )
+
+        self.get_logger().info(
             f'TeleopNode ready — {self._hz} Hz, '
-            f'SpaceMouse={"on" if use_sm else "off"}. '
+            f'SpaceMouse={"on" if use_sm else "off"}, '
+            f'recording={"on" if self._enable_recording else "off"}. '
             f'Open pygame window and start controlling.'
         )
 
@@ -154,6 +188,46 @@ class TeleopNode(Node):
         self.get_logger().info(f'Gripper seeded: {msg.data:.0f}')
 
     # ------------------------------------------------------------------
+    # Recorder service helpers
+    # ------------------------------------------------------------------
+
+    def _call_recorder(self, client, name: str) -> None:
+        """Fire-and-forget async service call with a log callback."""
+        if client is None or not client.service_is_ready():
+            self.get_logger().warn(f'Recorder service not ready: {name}')
+            return
+        future = client.call_async(Trigger.Request())
+        future.add_done_callback(
+            lambda f: self._on_recorder_response(f, name)
+        )
+
+    def _on_recorder_response(self, future, name: str) -> None:
+        try:
+            res = future.result()
+            if res.success:
+                self.get_logger().info(f'[recorder/{name}] {res.message}')
+            else:
+                self.get_logger().warn(f'[recorder/{name}] {res.message}')
+        except Exception as e:
+            self.get_logger().error(f'[recorder/{name}] call failed: {e}')
+
+    def _toggle_recording(self) -> None:
+        self._is_recording = not self._is_recording
+        self._call_recorder(self._rec_toggle_client, 'toggle_recording')
+
+    def _save_episode(self) -> None:
+        self._is_recording = False
+        self._call_recorder(self._rec_save_client, 'save_episode')
+
+    def _discard_episode(self) -> None:
+        self._is_recording = False
+        self._call_recorder(self._rec_discard_client, 'discard_episode')
+
+    def _finalize_dataset(self) -> None:
+        self._is_recording = False
+        self._call_recorder(self._rec_finalize_client, 'finalize_dataset')
+
+    # ------------------------------------------------------------------
     # Main blocking run — called from main()
     # ------------------------------------------------------------------
 
@@ -171,6 +245,16 @@ class TeleopNode(Node):
         dt = 1.0 / self._hz
         cfg = self._cfg
 
+        # Build recorder keydown callbacks (only populated when recording is enabled)
+        recorder_callbacks: dict = {}
+        if self._enable_recording:
+            recorder_callbacks = {
+                pygame.K_r:      self._toggle_recording,
+                pygame.K_n:      self._save_episode,
+                pygame.K_d:      self._discard_episode,
+                pygame.K_ESCAPE: self._finalize_dataset,
+            }
+
         # Wait until both robot topics have been received before starting control.
         # This guarantees _target reflects the real EE position, not the default value.
         self.get_logger().info('Waiting for robot state seed (ee_pose + gripper_pos)...')
@@ -185,8 +269,14 @@ class TeleopNode(Node):
                 # spin once to keep ROS callbacks alive
                 rclpy.spin_once(self, timeout_sec=0.0)
 
+                rec_status = 'REC' if self._is_recording else ('PAUSED' if self._enable_recording else '')
+
                 stop, vx, vy, vz, v_roll, v_pitch, v_yaw, gripper_cmd = \
-                    self._keyboard.step(self._spacemouse, self._target, self._gripper)
+                    self._keyboard.step(
+                        self._spacemouse, self._target, self._gripper,
+                        extra_keydown_callbacks=recorder_callbacks,
+                        recording_status=rec_status,
+                    )
 
                 if stop:
                     break

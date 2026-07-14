@@ -1,0 +1,77 @@
+# data_collection.yaml
+# Session-level hyperparameters for teleop data collection.
+# Edit this file before starting a collection session.
+# All parameters can be overridden on the command line:
+#   ros2 launch cloudgripper_ros2 data_collection.launch.py total_episodes:=50
+
+# ---------------------------------------------------------------------------
+# Dataset
+# ---------------------------------------------------------------------------
+dataset_root: "/tmp/cloudgripper_datasets/my_dataset"   # absolute path on disk
+dataset_repo_id: "CloudGripper/my-dataset"               # HuggingFace-style repo id
+total_episodes: 100                                       # stop after this many episodes
+task: ""                                                  # task description string (optional)
+
+# ---------------------------------------------------------------------------
+# Recording
+# ---------------------------------------------------------------------------
+fps: 5.0           # recording frame rate (must match obs_aggregator publish_rate)
+dof_mode: 6        # 3 = 3-DoF (ee_xyz + gripper), 6 = 6-DoF (ee_xyz + rpy + gripper)
+image_height: 480
+image_width: 640
+image_writer_threads: 4
+
+# ---------------------------------------------------------------------------
+# Robot
+# ---------------------------------------------------------------------------
+robot_ip: "192.168.0.244"
+
+# ---------------------------------------------------------------------------
+# Camera — realsense2_camera standard parameter set
+# ---------------------------------------------------------------------------
+camera_serial: "843112070951"
+
+# Stream geometry
+color_width:  640
+color_height: 480
+color_fps:    15.0
+
+# Pixel format published on /camera/color/image_raw.
+# "BGR8" is the realsense2_camera default; obs_aggregator converts to RGB8.
+# Set to "RGB8" here if you want to skip that conversion.
+color_format: "BGR8"
+
+# Auto-exposure / auto-white-balance
+# At startup both are enabled so the camera can converge.
+# After convergence call:  ros2 service call /camera/lock_exposure std_srvs/srv/Trigger
+# The ae_awb_controller_node then snapshots current values and disables both.
+color_auto_exposure:      true
+color_auto_white_balance: true
+
+# Manual override values — applied when the auto flags above are false.
+# Leave at -1 to let realsense use its last auto-converged value after locking.
+# Typical converged values for indoor lab lighting:
+#   exposure ~166 µs,  gain ~64,  white_balance ~4600 K
+color_exposure:      -1    # µs;  valid range depends on fps (e.g. 1–10000 at 15 fps)
+color_gain:          -1    # raw; valid range 16–248
+color_white_balance: -1    # K;   valid range ~2800–6500
+
+# ---------------------------------------------------------------------------
+# Teleop
+# ---------------------------------------------------------------------------
+control_hz: 50.0
+translation_speed: 50.0
+rotation_speed: 10.0
+use_spacemouse: true
+spacemouse_rotation_speed: 30.0
+spacemouse_deadzone: 0.05
+invert_x: true
+invert_y: true
+invert_roll: false
+invert_pitch: false
+invert_yaw: true
+
+# ---------------------------------------------------------------------------
+# Obs aggregator
+# ---------------------------------------------------------------------------
+obs_publish_rate: 5.0   # Hz — keep in sync with fps above

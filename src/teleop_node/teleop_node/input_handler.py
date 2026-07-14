@@ -187,6 +187,7 @@ class KeyboardInput:
         self._stop = False
         self._prev_g_open = False
         self._prev_g_close = False
+        self._recording_status = ''
 
     def start(self) -> None:
         pygame.init()
@@ -207,15 +208,22 @@ class KeyboardInput:
     def stop_requested(self) -> bool:
         return self._stop
 
-    def step( # this function processes one input tick, it returns a tuple of the stop flag, the translation velocity, the rotation velocity, and the gripper command
+    def step(
         self,
         spacemouse: Optional[SpaceMouseInput],
         target: list,
         gripper: float,
         sent: bool = True,
+        extra_keydown_callbacks: Optional[dict] = None,
+        recording_status: str = '',
     ) -> Tuple[bool, float, float, float, float, float, float, Optional[float]]:
         """
         Process one input tick.
+
+        Args:
+          extra_keydown_callbacks: optional dict mapping pygame key constants to zero-arg
+            callables, invoked once on KEYDOWN. Use for recording control (R/N/D/ESC).
+          recording_status: short status string rendered in the HUD (e.g. 'REC', 'PAUSED').
 
         Returns:
           (stop, vx, vy, vz, v_roll, v_pitch, v_yaw, gripper_cmd)
@@ -228,8 +236,15 @@ class KeyboardInput:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 self._stop = True
-            elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-                self._stop = True
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    self._stop = True
+                if extra_keydown_callbacks:
+                    cb = extra_keydown_callbacks.get(event.key)
+                    if cb is not None:
+                        cb()
+
+        self._recording_status = recording_status
 
         keys = pygame.key.get_pressed()
         pygame.mouse.get_rel()
@@ -267,13 +282,15 @@ class KeyboardInput:
 
         # --- HUD ---
         if self._surface and self._font:
-            self._render_hud(target, gripper, sent, rot_hint)
+            self._render_hud(target, gripper, sent, rot_hint, self._recording_status)
 
         return self._stop, vx, vy, vz, v_roll, v_pitch, v_yaw, gripper_cmd
 
-    def _render_hud(self, target, gripper, sent, rot_hint) -> None:
+    def _render_hud(self, target, gripper, sent, rot_hint, recording_status: str = '') -> None:
         roll_h, pitch_h, yaw_h = rot_hint
         self._surface.fill(_BG)
+
+        rec_color = _WARN if recording_status == 'REC' else _ACCENT if recording_status else _FG
         lines = [
             ('xArm Teleop (ROS 2) — keep this window focused', _FG),
             ('', _FG),
@@ -286,6 +303,7 @@ class KeyboardInput:
             (f'  gripper={gripper:5.0f}   Q=open  E=close',  _FG),
             ('', _FG),
             ('  [sent]' if sent else '  [idle]', _ACCENT if sent else _FG),
+            (f'  [{recording_status}]' if recording_status else '', rec_color),
             ('  [STOPPED — Esc]' if self._stop else '', _WARN),
         ]
         y = 12

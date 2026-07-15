@@ -7,11 +7,11 @@
 #
 # Options:
 #   --no-gpu      Disable GPU passthrough (default: enabled if available)
-#   --root        Run as root inside the container (needed for docker_setup.sh)
+#   --root        Run as root inside the container (rare — e.g. extra apt installs)
 #   --help        Show this help message
 #
-# On first run, the container will build the workspace automatically.
-# Subsequent runs reuse the build artifacts via the mounted volume.
+# On first entry, run docker_setup.sh inside the container to colcon build.
+# Subsequent runs reuse build artifacts on the mounted volume.
 # =============================================================================
 
 set -euo pipefail
@@ -61,23 +61,35 @@ fi
 # ---------------------------------------------------------------------------
 # Run container
 # ---------------------------------------------------------------------------
-USER_FLAGS=()
+HOST_UID="$(id -u)"
+HOST_GID="$(id -g)"
+HOST_USER="$(id -un)"
+
+ENTRYPOINT_ARGS=()
+ENV_FLAGS=(
+    -e "TERM=xterm-256color"
+    -e "DISPLAY=${DISPLAY:-:0}"
+)
+
 if [[ "$RUN_AS_ROOT" == "true" ]]; then
-    echo "[docker] Running as root (for apt install / first-time setup)."
+    echo "[docker] Running as root."
+    ENV_FLAGS+=(-e "XDG_RUNTIME_DIR=/tmp/runtime-root")
 else
-    USER_FLAGS=(-u "$(id -u):$(id -g)")
-    echo "[docker] Running as host user $(id -u):$(id -g)."
-    echo "[docker] Run: bash /workspace/scripts/docker_setup.sh"
+    echo "[docker] Running as host user ${HOST_USER} (${HOST_UID}:${HOST_GID})."
+    ENV_FLAGS+=(
+        -e "HOST_UID=${HOST_UID}"
+        -e "HOST_GID=${HOST_GID}"
+        -e "HOST_USER=${HOST_USER}"
+        -e "XDG_RUNTIME_DIR=/tmp/runtime-${HOST_UID}"
+    )
+    ENTRYPOINT_ARGS=(
+        --entrypoint /workspace/scripts/docker_entrypoint.sh
+    )
 fi
 
 echo "[docker] Starting container '${CONTAINER_NAME}'..."
 echo "[docker] Workspace mounted at /workspace"
-echo "[docker] Run 'bash /workspace/scripts/docker_setup.sh' on first launch to build."
-if [[ "$RUN_AS_ROOT" == "true" ]]; then
-    echo "[docker] (--root: apt install enabled; optional — image already has ROS packages.)"
-else
-    echo "[docker] (Use --root only if you need to apt-install additional system packages.)"
-fi
+echo "[docker] First time: bash /workspace/scripts/docker_setup.sh  (colcon build only)"
 echo ""
 
 sudo docker run -it --rm \
@@ -85,13 +97,11 @@ sudo docker run -it --rm \
     --network host \
     --privileged \
     "${GPU_FLAGS[@]}" \
-    "${USER_FLAGS[@]}" \
+    "${ENTRYPOINT_ARGS[@]}" \
     -v /dev:/dev \
     -v "${REPO_ROOT}:/workspace" \
     -v /tmp/.X11-unix:/tmp/.X11-unix \
     -w /workspace \
-    -e "TERM=xterm-256color" \
-    -e "DISPLAY=${DISPLAY:-:0}" \
-    -e "XDG_RUNTIME_DIR=/tmp/runtime-root" \
+    "${ENV_FLAGS[@]}" \
     "$IMAGE" \
     bash --rcfile /workspace/scripts/docker_rc.bash

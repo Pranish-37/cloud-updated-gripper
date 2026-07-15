@@ -97,28 +97,18 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Source ROS 2 and workspace
+# Source ROS 2, workspace, lerobot (ros2 launch ignores interactive PYTHONPATH)
 # ---------------------------------------------------------------------------
-ROS_DISTRO="${ROS_DISTRO:-humble}"
+# shellcheck disable=SC1091
+source "${REPO_ROOT}/scripts/lib/workspace_env.sh"
+cloudgripper_source_env "${REPO_ROOT}" "[data_collection] "
 
-if [[ ! -f "/opt/ros/${ROS_DISTRO}/setup.bash" ]]; then
-    echo "[ERROR] ROS 2 (${ROS_DISTRO}) not found at /opt/ros/${ROS_DISTRO}/"
-    echo "        Set ROS_DISTRO env var to match your installation."
-    exit 1
+# Resolve dataset_root (CLI override or YAML default) and verify write access.
+RESOLVED_DATASET_ROOT="${DATASET_ROOT:-}"
+if [[ -z "$RESOLVED_DATASET_ROOT" ]]; then
+    RESOLVED_DATASET_ROOT="$(grep 'dataset_root:' "$CONFIG_FILE" | head -1 | awk '{print $2}' | tr -d '"')"
 fi
-set +u
-source "/opt/ros/${ROS_DISTRO}/setup.bash"
-set -u
-
-INSTALL_SETUP="${REPO_ROOT}/install/setup.bash"
-if [[ ! -f "$INSTALL_SETUP" ]]; then
-    echo "[ERROR] Workspace not built. Run first:"
-    echo "        cd ${REPO_ROOT} && colcon build --symlink-install"
-    exit 1
-fi
-set +u
-source "$INSTALL_SETUP"
-set -u
+cloudgripper_ensure_dataset_writable "$RESOLVED_DATASET_ROOT" "[data_collection] "
 
 # ---------------------------------------------------------------------------
 # Print session summary
@@ -170,22 +160,6 @@ if [[ -n "$TASK"         ]]; then LAUNCH_ARGS+=("task:=${TASK}");               
 if [[ -n "$PUSH_TO_HUB"  ]]; then LAUNCH_ARGS+=("push_to_hub:=${PUSH_TO_HUB}");  fi
 if [[ -n "$ROBOT_IP"     ]]; then LAUNCH_ARGS+=("robot_ip:=${ROBOT_IP}");         fi
 if [[ -n "$USE_SPACEMOUSE" ]]; then LAUNCH_ARGS+=("use_spacemouse:=${USE_SPACEMOUSE}"); fi
-
-# ---------------------------------------------------------------------------
-# lerobot PYTHONPATH — ros2 launch does not inherit the interactive shell's
-# PYTHONPATH set by docker_rc.bash, so we must export it explicitly here.
-# ---------------------------------------------------------------------------
-LEROBOT_WS="/workspace/lerobot"
-if [[ -d "${LEROBOT_WS}/src/lerobot" ]]; then
-    export PYTHONPATH="${LEROBOT_WS}/src:${PYTHONPATH:-}"
-    echo "[data_collection] lerobot PYTHONPATH (src layout): ${LEROBOT_WS}/src"
-elif [[ -d "${LEROBOT_WS}/lerobot" ]]; then
-    export PYTHONPATH="${LEROBOT_WS}:${PYTHONPATH:-}"
-    echo "[data_collection] lerobot PYTHONPATH (flat layout): ${LEROBOT_WS}"
-else
-    echo "[WARN] /workspace/lerobot not found — recorder_node will fail to import lerobot."
-    echo "       Run: bash /workspace/scripts/docker_setup.sh"
-fi
 
 # ---------------------------------------------------------------------------
 # Launch

@@ -175,14 +175,14 @@ class RecorderNode(Node):
         )
 
     def _clear_incomplete_dataset(self) -> None:
-        """Remove a crashed/empty dataset that only has partial metadata."""
-        if not (self._dataset_root / 'meta' / 'info.json').exists():
+        """Remove a dataset directory that cannot be resumed."""
+        if not self._dataset_root.exists():
             return
         if self._dataset_is_resumable():
             return
         self.get_logger().warn(
-            f'Incomplete or corrupted dataset at {self._dataset_root} '
-            f'— removing and starting fresh.'
+            f'Cannot resume dataset at {self._dataset_root} '
+            f'(missing or incomplete metadata) — removing and starting fresh.'
         )
         shutil.rmtree(self._dataset_root)
 

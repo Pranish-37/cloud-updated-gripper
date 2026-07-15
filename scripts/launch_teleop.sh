@@ -41,26 +41,9 @@ done
 # ---------------------------------------------------------------------------
 # Source ROS 2 and workspace
 # ---------------------------------------------------------------------------
-ROS_DISTRO="${ROS_DISTRO:-humble}"
-
-if [[ ! -f "/opt/ros/${ROS_DISTRO}/setup.bash" ]]; then
-    echo "[ERROR] ROS 2 (${ROS_DISTRO}) not found at /opt/ros/${ROS_DISTRO}/"
-    echo "        Set ROS_DISTRO env var to match your installation."
-    exit 1
-fi
-set +u
-source "/opt/ros/${ROS_DISTRO}/setup.bash"
-set -u
-
-INSTALL_SETUP="${REPO_ROOT}/install/setup.bash"
-if [[ ! -f "$INSTALL_SETUP" ]]; then
-    echo "[ERROR] Workspace not built. Run first:"
-    echo "        cd ${REPO_ROOT} && colcon build"
-    exit 1
-fi
-set +u
-source "$INSTALL_SETUP"
-set -u
+# shellcheck disable=SC1091
+source "${REPO_ROOT}/scripts/lib/workspace_env.sh"
+cloudgripper_source_env "${REPO_ROOT}" "[teleop] "
 
 # ---------------------------------------------------------------------------
 # Cleanup on exit — kill background nodes when script exits or Ctrl-C

@@ -1,7 +1,7 @@
 # CloudGripper V2 ROS
 
-ROS 2 port of the LeRobot xArm7 pick-and-place pipeline  
-(xArm7 + Intel RealSense, ACT / Diffusion / π₀ policies).
+ROS 2–based robotic manipulation system integrating teleoperated data collection and policy deployment within the LeRobot framework.
+
 
 ---
 

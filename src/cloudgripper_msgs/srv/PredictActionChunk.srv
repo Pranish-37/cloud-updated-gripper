@@ -1,0 +1,15 @@
+# PredictActionChunk — passive policy inference on demand.
+#
+# Request carries the observation frame to infer from.
+# Response returns a flattened denormalized action chunk:
+#   actions layout = row-major (chunk_size, action_dim)
+#   3-DoF policies → action_dim = 4
+#   6-DoF policies → action_dim = 7
+
+cloudgripper_msgs/ObsFrame frame
+---
+bool success
+string message
+float32[] actions
+int32 chunk_size
+int32 action_dim

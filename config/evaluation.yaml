@@ -1,0 +1,51 @@
+# evaluation.yaml
+# Session-level hyperparameters for real-world policy evaluation.
+# Edit paths before launching. CLI overrides available via launch_evaluation.sh.
+#
+# NOTE: The /** wildcard makes every key available to all nodes via --params-file.
+# Image resolution must match the training dataset meta/info.json — mismatches fail at runtime.
+
+/**:
+  ros__parameters:
+
+    # ---------------------------------------------------------------------------
+    # Policy
+    # ---------------------------------------------------------------------------
+    policy_path: "/workspace/checkpoints/last/pretrained_model"
+    dataset_meta_path: "/workspace/data/rgb_stacking"   # dataset root with meta/info.json
+    device: "cuda"                                      # cuda or cpu (auto-fallback to cpu)
+
+    chunk_size: 16          # must match policy config.json (error on mismatch)
+    n_action_steps: 8       # compared to policy config.json (warning on mismatch)
+    max_steps_per_episode: 90
+    fps: 5.0                # control loop rate (must match obs_aggregator publish_rate)
+    dof_mode: 3             # 3 or 6
+    default_rpy: [3.14159, 0.0, 0.0]   # pad target for 3-DoF policies
+
+    eval_output_dir: "/workspace/eval_outputs/run_001"
+
+    # ---------------------------------------------------------------------------
+    # Camera — must match training dataset resolution
+    # ---------------------------------------------------------------------------
+    serial_no: "843112070951"
+    enable_color:  true
+    enable_depth:  false
+    enable_infra1: false
+    enable_infra2: false
+    rgb_camera.color_profile: "1920x1080x15"
+    rgb_camera.color_format: "RGB8"
+    realsense_node_name: "camera/camera"
+
+    color_auto_exposure:      true
+    color_auto_white_balance: true
+    color_exposure:      -1
+    color_gain:          -1
+    color_white_balance: -1
+
+    # ---------------------------------------------------------------------------
+    # Robot — position mode for policy rollout (blocking moves)
+    # ---------------------------------------------------------------------------
+    robot_ip: "192.168.0.244"
+    robot_home_position: [330.0, 0.0, 160.0, 3.14159, 0.0, 0.0, 850.0]
+    servo_mode: false
+    publish_rate: 5.0       # obs_aggregator publish_rate — keep in sync with fps

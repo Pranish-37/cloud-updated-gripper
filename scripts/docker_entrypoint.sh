@@ -4,6 +4,7 @@
 # Called by docker_shell.sh (container starts as root, then exec runuser).
 # Keeps file ownership on /workspace aligned with the host UID/GID.
 
+
 set -euo pipefail
 
 HOST_UID="${HOST_UID:-1000}"

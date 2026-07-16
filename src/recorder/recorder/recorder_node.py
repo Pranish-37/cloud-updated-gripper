@@ -343,6 +343,7 @@ class RecorderNode(Node):
         res.message = 'Dataset finalized. Node shutting down.'
         return res
 
+
     # ------------------------------------------------------------------
     # Finalize helper
     # ------------------------------------------------------------------

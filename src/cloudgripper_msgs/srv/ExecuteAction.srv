@@ -1,0 +1,9 @@
+# ExecuteAction — blocking Cartesian + gripper command (eval / policy rollout).
+# Matches old real_e2e_eval send_action(wait=True) semantics.
+#
+# command: float64[7] = [x, y, z mm, roll, pitch, yaw rad, gripper 0-850]
+
+float64[] command
+---
+bool success
+string message

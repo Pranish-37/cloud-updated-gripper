@@ -9,3 +9,5 @@
 **/*.py[cod]
 /lerobot/
 /data/
+/policy/
+/eval_outputs/

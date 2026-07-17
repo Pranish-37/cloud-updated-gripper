@@ -6,6 +6,7 @@
   <description>
     Real-world policy evaluation loop for CloudGripper V2.
     Orchestrates inference, robot actions, resets, and logging.
+    Interactive control via pygame window (same pattern as teleop).
   </description>
   <maintainer email="todo@todo.com">CloudGripper</maintainer>
   <license>MIT</license>

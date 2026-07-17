@@ -17,10 +17,12 @@
 #   --device <cuda|cpu>   Inference device                   (default: from YAML)
 #   --help                Show this help message
 #
-# After launch:
-#   1. Lock camera exposure once converged:
-#        ros2 service call /camera/lock_exposure std_srvs/srv/Trigger
-#   2. Follow stdin prompts in the episode_manager terminal
+# After launch (focus the "CloudGripper Eval" pygame window):
+#   Enter / Space  — confirm (begin eval / start episode)
+#   Y              — success → home → next episode
+#   N              — failure → home → next episode
+#   S              — abort episode (fail) → home → next episode
+#   Esc            — quit evaluation
 # =============================================================================
 
 set -euo pipefail
@@ -48,7 +50,7 @@ while [[ $# -gt 0 ]]; do
         --ip)            ROBOT_IP="$2";           shift 2 ;;
         --device)        DEVICE="$2";             shift 2 ;;
         --help)
-            sed -n '2,22p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
+            sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
             exit 0 ;;
         *) echo "[ERROR] Unknown option: $1"; exit 1 ;;
     esac
@@ -87,9 +89,8 @@ printf  "║  config    : %-49s║\n" "config/evaluation.yaml"
 [[ -n "$DOF_MODE"          ]] && printf "║  dof       : %-49s║\n" "${DOF_MODE}"
 [[ -n "$DEVICE"            ]] && printf "║  device    : %-49s║\n" "${DEVICE}"
 echo "╠══════════════════════════════════════════════════════════════╣"
-echo "║  After launch: lock camera exposure when converged:         ║"
-echo "║    ros2 service call /camera/lock_exposure std_srvs/srv/Trigger ║"
-echo "║  Follow stdin prompts in the episode_manager terminal.      ║"
+echo "║  Focus pygame window \"CloudGripper Eval\":                   ║"
+echo "║    Enter/Space confirm · Y success · N fail · S abort · Esc ║"
 echo "╚══════════════════════════════════════════════════════════════╝"
 echo ""
 

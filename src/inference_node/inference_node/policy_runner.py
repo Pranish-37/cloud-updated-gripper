@@ -48,12 +48,32 @@ def resolve_device(requested: str) -> str:
     return device
 
 
+def policy_output_chunk_size(policy_cfg) -> int:
+    """Policy one-shot action-chunk length (CloudGripper ``chunk_size``).
+
+    - ACT-style: ``config.chunk_size``
+    - Diffusion: ``config.horizon`` (full sampled trajectory; not ``n_action_steps``)
+    """
+    if hasattr(policy_cfg, 'chunk_size'):
+        return int(policy_cfg.chunk_size)
+    if hasattr(policy_cfg, 'horizon'):
+        return int(policy_cfg.horizon)
+    raise AttributeError(
+        f'Policy config {type(policy_cfg).__name__} has neither chunk_size nor horizon'
+    )
+
+
 def validate_policy_params(
     yaml_chunk_size: int,
     yaml_n_action_steps: int,
     policy_cfg,
 ) -> None:
-    policy_chunk = int(getattr(policy_cfg, 'chunk_size', yaml_chunk_size))
+    """Validate YAML against policy config.
+
+    ``chunk_size``: policy one-shot output length (must match).
+    ``n_action_steps``: how many of those steps the controller executes (warn only).
+    """
+    policy_chunk = policy_output_chunk_size(policy_cfg)
     policy_n_steps = int(getattr(policy_cfg, 'n_action_steps', yaml_n_action_steps))
 
     if yaml_chunk_size != policy_chunk:
@@ -64,7 +84,7 @@ def validate_policy_params(
     if yaml_n_action_steps != policy_n_steps:
         logger.warning(
             'n_action_steps mismatch: evaluation.yaml=%s, policy config=%s '
-            '(using evaluation.yaml value).',
+            '(using evaluation.yaml value for control loop).',
             yaml_n_action_steps,
             policy_n_steps,
         )
@@ -128,6 +148,7 @@ class PolicyRunner:
         validate_policy_params(yaml_chunk_size, yaml_n_action_steps, self._cfg)
 
         self._chunk_size = yaml_chunk_size
+        self._n_action_steps = yaml_n_action_steps
         self._action_dim = int(self._ds_features['action']['shape'][0])
 
         self._policy = make_policy(self._cfg, ds_meta=self._ds_meta)
@@ -138,10 +159,12 @@ class PolicyRunner:
         )
         self._policy.eval()
         logger.info(
-            'Policy loaded — type=%s device=%s chunk_size=%d action_dim=%d',
+            'Policy loaded — type=%s device=%s chunk_size=%d '
+            'n_action_steps=%d action_dim=%d',
             self._cfg.type,
             resolved_device,
             self._chunk_size,
+            self._n_action_steps,
             self._action_dim,
         )
 
@@ -160,20 +183,92 @@ class PolicyRunner:
             if hasattr(proc, 'reset'):
                 proc.reset()
 
-    def predict_chunk(self, frame: ObsFrame) -> np.ndarray:
-        """Return denormalized action chunk, shape (chunk_size, action_dim)."""
-        values = obs_frame_to_values(frame, self._ds_features)
+    def _prepare_policy_batch(self, batch: dict) -> dict:
+        """Populate temporal obs queues when required (e.g. DiffusionPolicy).
+
+        Mirrors the queue-filling half of DiffusionPolicy.select_action before
+        predict_action_chunk stacks from self._queues.
+        """
+        from lerobot.policies.utils import populate_queues
+        from lerobot.utils.constants import ACTION, OBS_IMAGES
+
+        infer_batch = dict(batch)
+        if ACTION in infer_batch:
+            infer_batch.pop(ACTION)
+
+        policy = self._policy
+        queues = getattr(policy, '_queues', None)
+        if queues is None:
+            return infer_batch
+
+        cfg = policy.config
+        if getattr(cfg, 'image_features', None):
+            infer_batch[OBS_IMAGES] = torch.stack(
+                [infer_batch[key] for key in cfg.image_features], dim=-4,
+            )
+        policy._queues = populate_queues(queues, infer_batch)
+        return infer_batch
+
+    def _predict_raw_chunk(self, batch: dict) -> torch.Tensor:
+        """Run policy and return a (B, chunk_size, action_dim) tensor.
+
+        LeRobot DiffusionPolicy.predict_action_chunk truncates to n_action_steps
+        for its internal action queue. CloudGripper treats chunk_size as the full
+        one-shot output (Diffusion: horizon), so we sample the full trajectory.
+        """
+        policy = self._policy
+        cfg = policy.config
+
+        is_diffusion = (
+            getattr(cfg, 'type', None) == 'diffusion'
+            or (hasattr(cfg, 'horizon') and not hasattr(cfg, 'chunk_size'))
+        )
+        if not is_diffusion:
+            return policy.predict_action_chunk(batch)
+
+        from lerobot.utils.constants import OBS_STATE
+
+        queues = policy._queues
+        stacked = {
+            k: torch.stack(list(queues[k]), dim=1)
+            for k in batch if k in queues
+        }
+        model = policy.diffusion
+        batch_size = stacked[OBS_STATE].shape[0]
+        global_cond = model._prepare_global_conditioning(stacked)
+        # (B, horizon, action_dim) — full policy chunk, not n_action_steps slice
+        actions = model.conditional_sample(batch_size, global_cond=global_cond)
+        if actions.shape[1] != self._chunk_size:
+            raise RuntimeError(
+                f'Diffusion horizon output length {actions.shape[1]} != '
+                f'chunk_size {self._chunk_size}'
+            )
+        return actions
+
+    def predict_chunk_from_values(self, values: dict) -> np.ndarray:
+        """Return denormalized action chunk from build_dataset_frame values.
+
+        values must match obs_frame_to_values() output:
+          state feature names -> float, plus camera key 'front' -> HxWx3 uint8.
+
+        Returns shape (chunk_size, action_dim). The controller should execute
+        only the first n_action_steps of this chunk.
+        """
+        from lerobot.policies.utils import prepare_observation_for_inference
+
         dataset_frame = self._build_dataset_frame(
             self._ds_features, values, prefix='observation',
         )
-        batch = self._preprocessor(dataset_frame)
-        batch = {
-            key: value.unsqueeze(0) if isinstance(value, torch.Tensor) else value
-            for key, value in batch.items()
-        }
+        # Official LeRobot inference path: HWC uint8 → CHW float32 [0, 1],
+        # add batch dim, move to device — must happen before NormalizerProcessor
+        # (which adapts stats dtype to the tensor dtype and overflows on uint8).
+        device = torch.device(self._cfg.device)
+        batch = prepare_observation_for_inference(dataset_frame, device)
+        batch = self._preprocessor(batch)
+        batch = self._prepare_policy_batch(batch)
 
         with torch.inference_mode():
-            action_chunk = self._policy.predict_action_chunk(batch)
+            action_chunk = self._predict_raw_chunk(batch)
 
         if not isinstance(action_chunk, torch.Tensor):
             raise TypeError(f'Expected Tensor action chunk, got {type(action_chunk)}')
@@ -195,3 +290,8 @@ class PolicyRunner:
                 f'expected ({self._chunk_size}, {self._action_dim})'
             )
         return chunk
+
+    def predict_chunk(self, frame: ObsFrame) -> np.ndarray:
+        """Return denormalized action chunk, shape (chunk_size, action_dim)."""
+        values = obs_frame_to_values(frame, self._ds_features)
+        return self.predict_chunk_from_values(values)

@@ -10,16 +10,13 @@ Subscribes — relative topic name:
   policy/action_cmd    std_msgs/Float64MultiArray   (7-vector: x,y,z mm · roll,pitch,yaw rad · gripper)
 
 Parameters:
-  robot_ip        (str,   default '192.168.0.244')
-  robot_name      (str,   default 'robot')          — used as TF frame_id prefix
-  publish_rate    (float, default 15.0  Hz)
-  gripper_deadband(float, default 20.0  raw units)
-  servo_mode      (bool,  default False)
-      False → mode 0: move_to(wait=True)        — precise, for policy inference
-      True  → mode 1: set_servo_cartesian()     — real-time, non-blocking, for teleop
+  robot_ip / robot_name / publish_rate / gripper_deadband / servo_mode / robot_home_position
 
 Services:
-  robot/set_servo_mode  std_srvs/SetBool   — switch servo mode at runtime
+  robot/set_servo_mode     std_srvs/SetBool
+  robot/move_home          std_srvs/Trigger
+  robot/execute_action     cloudgripper_msgs/ExecuteAction
+      — blocking move+gripper (same as old real_e2e send_action wait=True)
 
 Multi-robot usage — launch each instance with its own namespace, e.g.:
   ros2 run xarm_driver xarm_driver_node --ros-args \
@@ -38,6 +35,7 @@ from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64, Float64MultiArray
 from std_srvs.srv import SetBool, Trigger
 
+from cloudgripper_msgs.srv import ExecuteAction
 from xarm_driver.driver import XArmDriver
 
 # Workspace limits (mm)
@@ -125,6 +123,13 @@ class XArmDriverNode(Node):
             self._on_move_home,
         )
 
+        # --- blocking execute (policy eval) ---
+        self._exec_srv = self.create_service(
+            ExecuteAction,
+            'robot/execute_action',
+            self._on_execute_action,
+        )
+
         # --- state publish timer ---
         self._timer = self.create_timer(1.0 / rate, self._publish_state) # create a timer for the state publishing, it will be called at the publish rate
 
@@ -174,40 +179,75 @@ class XArmDriverNode(Node):
     # Action command callback
     # ------------------------------------------------------------------
 
-    def _on_action_cmd(self, msg: Float64MultiArray) -> None: # callback function for the action command, it will be called when the action command is received
-        if self._resetting:
-            return
-        data = list(msg.data)
-        if len(data) != 7: # check if the action command is a 7-vector: x,y,z mm  roll,pitch,yaw rad  gripper
-            self.get_logger().error(
-                f'/policy/action_cmd expects 7-vector, got {len(data)} — ignoring.' # log the error
-            )
-            return
-
-        x, y, z, roll, pitch, yaw, gripper = data # unpack the action command
-
-        # Workspace limit check
-        if not (_WS['x'][0] <= x <= _WS['x'][1]): # check if the x coordinate is within the workspace limits
-            self.get_logger().warn(f'x={x:.1f} mm out of workspace [{_WS["x"]}] — cmd rejected.')
-            return
+    def _apply_cartesian_gripper(
+        self, x: float, y: float, z: float,
+        roll: float, pitch: float, yaw: float, gripper: float,
+        *, wait: bool,
+    ) -> tuple[bool, str]:
+        """Shared move path for topic callback and ExecuteAction service."""
+        if not (_WS['x'][0] <= x <= _WS['x'][1]):
+            return False, f'x={x:.1f} mm out of workspace [{_WS["x"]}]'
         if not (_WS['y'][0] <= y <= _WS['y'][1]):
-            self.get_logger().warn(f'y={y:.1f} mm out of workspace [{_WS["y"]}] — cmd rejected.')
-            return
+            return False, f'y={y:.1f} mm out of workspace [{_WS["y"]}]'
         if not (_WS['z'][0] <= z <= _WS['z'][1]):
-            self.get_logger().warn(f'z={z:.1f} mm out of workspace [{_WS["z"]}] — cmd rejected.')
-            return
+            return False, f'z={z:.1f} mm out of workspace [{_WS["z"]}]'
 
-        # Cartesian move — servo mode: non-blocking real-time; position mode: blocking
         if self._servo_mode:
             ok = self._driver.set_servo_cartesian(x, y, z, roll, pitch, yaw, is_radian=True)
         else:
-            ok = self._driver.move_to(x, y, z, roll, pitch, yaw, wait=True, is_radian=True)
+            ok = self._driver.move_to(
+                x, y, z, roll, pitch, yaw, wait=wait, is_radian=True,
+            )
         if not ok:
-            self.get_logger().warn('move command returned failure code.')
+            return False, 'move command returned failure code'
 
-        # Gripper with dead-band
         if abs(gripper - self._driver.xarm_gripper_pos) > self._deadband:
-            self._driver.set_xarm_gripper(gripper, wait=True)
+            self._driver.set_xarm_gripper(gripper, wait=wait)
+        return True, 'ok'
+
+    def _on_action_cmd(self, msg: Float64MultiArray) -> None:
+        if self._resetting:
+            return
+        data = list(msg.data)
+        if len(data) != 7:
+            self.get_logger().error(
+                f'/policy/action_cmd expects 7-vector, got {len(data)} — ignoring.'
+            )
+            return
+
+        x, y, z, roll, pitch, yaw, gripper = data
+        ok, msg_txt = self._apply_cartesian_gripper(
+            x, y, z, roll, pitch, yaw, gripper, wait=True,
+        )
+        if not ok:
+            self.get_logger().warn(msg_txt)
+
+    def _on_execute_action(
+        self,
+        request: ExecuteAction.Request,
+        response: ExecuteAction.Response,
+    ) -> ExecuteAction.Response:
+        """Blocking policy step — same semantics as old send_action(wait=True)."""
+        if self._resetting:
+            response.success = False
+            response.message = 'Busy resetting / moving home.'
+            return response
+
+        data = list(request.command)
+        if len(data) != 7:
+            response.success = False
+            response.message = f'command must be length 7, got {len(data)}'
+            return response
+
+        x, y, z, roll, pitch, yaw, gripper = (float(v) for v in data)
+        ok, msg_txt = self._apply_cartesian_gripper(
+            x, y, z, roll, pitch, yaw, gripper, wait=True,
+        )
+        response.success = ok
+        response.message = msg_txt
+        if not ok:
+            self.get_logger().warn(f'execute_action: {msg_txt}')
+        return response
 
     # ------------------------------------------------------------------
     # Move-home (shared logic used at startup and via service)

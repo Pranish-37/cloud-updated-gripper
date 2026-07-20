@@ -154,6 +154,14 @@ On entry you should now see `[docker] Workspace sourced: /workspace/install/setu
 
 ---
 
+#### Modification
+If you modified source code of any Node in this system, re-build the corresponding package before launch data collection or policy evaluation.
+```bash
+# re-build episode_manager for example
+colcon build --packages-select episode_manager --symlink-install 
+set +u && source install/setup.bash
+```
+
 ### Native (Ubuntu 22.04)
 
 #### 1. ROS 2

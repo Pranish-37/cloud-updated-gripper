@@ -7,8 +7,13 @@
 # image  : sensor_msgs/Image, encoding rgb8, shape (H, W, 3) uint8
 #
 # dof_mode: "3dof" or "6dof"
+#
+# timestamp_delta_ms : signed (t_image - t_state) in milliseconds, where
+#                      t_state is ee_pose.header.stamp and t_image is the
+#                      camera Image.header.stamp (original sensor stamps).
 
 std_msgs/Header header
 float32[] state
 sensor_msgs/Image image
 string dof_mode
+float32 timestamp_delta_ms

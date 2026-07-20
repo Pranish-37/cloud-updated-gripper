@@ -50,4 +50,8 @@
     robot_ip: "192.168.0.244"
     robot_home_position: [330.0, 0.0, 160.0, 3.14159, 0.0, 0.0, 850.0]
     servo_mode: false
-    publish_rate: 5.0       # obs_aggregator publish_rate — keep in sync with fps
+    robot_publish_rate: 50.0  # xarm_driver state Hz
+    publish_rate: 15.0         # obs_aggregator ObsFrame Hz — keep in sync with fps
+    state_buffer_sec: 0.5
+    state_stamp_mismatch_warn_ms: 5.0
+    state_image_match_warn_ms: 50.0

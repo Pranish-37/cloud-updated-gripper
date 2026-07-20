@@ -27,6 +27,11 @@ Action labeling (next-state supervision):
 
   The last frame of every episode has no next-state label and is silently dropped.
 
+Timing diagnostics (not used by policy training):
+  Per-frame observation.timestamp_delta_ms = (t_image - t_ee_pose) in ms.
+  Episode aggregates (min/max/mean/median) are appended to
+  meta/timestamp_alignment.json on each successful save_episode.
+
 Dataset create vs resume:
   - If dataset_root/meta/info.json exists AND num_episodes < total_episodes → resume
   - If dataset_root/meta/info.json exists AND num_episodes >= total_episodes → log, do nothing
@@ -34,6 +39,7 @@ Dataset create vs resume:
 """
 
 from pathlib import Path
+import json
 import shutil
 
 import numpy as np
@@ -42,6 +48,9 @@ from rclpy.node import Node
 from std_srvs.srv import Trigger
 
 from cloudgripper_msgs.msg import ObsFrame
+
+# Sidecar next to LeRobot meta/ — episode-level image↔state stamp alignment stats.
+_TIMESTAMP_ALIGNMENT_FILENAME = 'timestamp_alignment.json'
 
 
 def _build_features(dof: int, img_h: int, img_w: int) -> dict:
@@ -81,6 +90,22 @@ def _build_features(dof: int, img_h: int, img_w: int) -> dict:
             'shape': action_shape,
             'names': action_names,
         },
+        # Diagnostic only — exclude from policy input feature lists when training.
+        'observation.timestamp_delta_ms': {
+            'dtype': 'float32',
+            'shape': (1,),
+            'names': ['delta_ms'],
+        },
+    }
+
+
+def _delta_stats(deltas: list[float]) -> dict:
+    arr = np.asarray(deltas, dtype=np.float64)
+    return {
+        'min': float(np.min(arr)),
+        'max': float(np.max(arr)),
+        'mean': float(np.mean(arr)),
+        'median': float(np.median(arr)),
     }
 
 
@@ -126,6 +151,8 @@ class RecorderNode(Node):
         self._pending_frame: dict | None = None  # last received frame, awaiting next-state label
         self._dataset = None # LeRobotDataset instance
         self._ready = False # False until dataset is loaded and episodes remain
+        # timestamp_delta_ms values for frames committed via add_frame this episode
+        self._episode_deltas: list[float] = []
 
         # --- build / resume dataset ---
         self._init_dataset()
@@ -190,6 +217,47 @@ class RecorderNode(Node):
         """PyAV video encoding requires integer fps; JSON stores it as float."""
         dataset.meta.info['fps'] = int(round(dataset.meta.info['fps']))
 
+    def _alignment_sidecar_path(self) -> Path:
+        return self._dataset_root / 'meta' / _TIMESTAMP_ALIGNMENT_FILENAME
+
+    def _append_alignment_sidecar(self, episode_index: int, deltas: list[float]) -> None:
+        """Append episode-level timestamp_delta_ms stats to meta/timestamp_alignment.json."""
+        if not deltas:
+            self.get_logger().warn(
+                f'Episode {episode_index}: no timestamp_delta_ms samples; skipping sidecar update.'
+            )
+            return
+
+        path = self._alignment_sidecar_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        records: list = []
+        if path.exists():
+            with open(path) as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                records = data
+
+        stats = _delta_stats(deltas)
+        records.append({
+            'episode_index': episode_index,
+            'num_frames': len(deltas),
+            'timestamp_delta_ms': stats,
+            'unit': 'ms',
+            'definition': 't_image - t_ee_pose (signed)',
+        })
+        with open(path, 'w') as f:
+            json.dump(records, f, indent=2)
+
+        self.get_logger().info(
+            f'Episode {episode_index} timestamp_delta_ms — '
+            f'min={stats["min"]:.2f} max={stats["max"]:.2f} '
+            f'mean={stats["mean"]:.2f} median={stats["median"]:.2f} ms '
+            f'→ {path}'
+        )
+
+    def _reset_episode_timing(self) -> None:
+        self._episode_deltas = []
+
     def _init_dataset(self) -> None:
         # Import here so lerobot is only required at runtime, not at import time.
         from lerobot.datasets.lerobot_dataset import LeRobotDataset
@@ -253,17 +321,21 @@ class RecorderNode(Node):
             msg.image.height, msg.image.width, 3
         ).copy()
 
+        delta_ms = np.array([msg.timestamp_delta_ms], dtype=np.float32)
+
         # Label the pending frame with the current state's action component, then commit it
         if self._pending_frame is not None:
             frame = self._pending_frame
             frame['action'] = action
             frame['task'] = self._task
             self._dataset.add_frame(frame)
+            self._episode_deltas.append(float(frame['observation.timestamp_delta_ms'][0]))
 
         # Park current frame as pending (will be labeled when next frame arrives)
         self._pending_frame = {
             'observation.state': state,
             'observation.images.front': img,
+            'observation.timestamp_delta_ms': delta_ms,
             'task': self._task,
             # 'action' filled in on next callback
         }
@@ -303,7 +375,11 @@ class RecorderNode(Node):
 
         if self._has_pending_frames():
             self._fix_dataset_fps(self._dataset)
+            episode_index = self._dataset.num_episodes  # index of episode about to be saved
+            deltas = list(self._episode_deltas)
             self._dataset.save_episode()
+            self._append_alignment_sidecar(episode_index, deltas)
+            self._reset_episode_timing()
             n = self._dataset.num_episodes
             self.get_logger().info(
                 f'Episode saved. {n}/{self._total_episodes}'
@@ -319,6 +395,7 @@ class RecorderNode(Node):
                 'save_episode called but buffer is empty — episode discarded.'
             )
             self._dataset.clear_episode_buffer()
+            self._reset_episode_timing()
             res.success = False
             res.message = 'Buffer was empty; episode discarded. Press R to start recording.'
 
@@ -329,6 +406,7 @@ class RecorderNode(Node):
         self._pending_frame = None
         if self._has_pending_frames():
             self._dataset.clear_episode_buffer()
+        self._reset_episode_timing()
         n = self._dataset.num_episodes if self._dataset else 0
         self.get_logger().info(
             f'Episode discarded. Restarting episode {n} (index unchanged).'
@@ -359,7 +437,11 @@ class RecorderNode(Node):
         if self._has_pending_frames():
             self.get_logger().info('Saving in-progress episode before finalizing...')
             self._fix_dataset_fps(self._dataset)
+            episode_index = self._dataset.num_episodes
+            deltas = list(self._episode_deltas)
             self._dataset.save_episode()
+            self._append_alignment_sidecar(episode_index, deltas)
+            self._reset_episode_timing()
 
         self.get_logger().info(
             f'Finalizing dataset — {self._dataset.num_episodes} episodes total.'

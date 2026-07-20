@@ -113,6 +113,9 @@ def obs_frame_to_values(frame: ObsFrame, ds_features: dict) -> dict:
 
     values = {name: float(state[i]) for i, name in enumerate(state_names)}
     values['front'] = image
+    # Diagnostic feature present on newer datasets; ignored by policy input_features.
+    if 'observation.timestamp_delta_ms' in ds_features:
+        values['timestamp_delta_ms'] = float(frame.timestamp_delta_ms)
     return values
 
 

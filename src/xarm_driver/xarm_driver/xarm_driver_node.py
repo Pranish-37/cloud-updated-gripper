@@ -1,7 +1,7 @@
 """
 xarm_driver_node — ROS 2 node that wraps XArmDriver.
 
-Publishes (15 Hz) — relative topic names, affected by ROS 2 namespace:
+Publishes (robot_publish_rate Hz, default 50) — relative topic names, affected by ROS 2 namespace:
   robot/joint_states   sensor_msgs/JointState
   robot/ee_pose        geometry_msgs/PoseStamped   (position mm, orientation as quaternion)
   robot/gripper_pos    std_msgs/Float64             (0-850 raw)
@@ -10,7 +10,7 @@ Subscribes — relative topic name:
   policy/action_cmd    std_msgs/Float64MultiArray   (7-vector: x,y,z mm · roll,pitch,yaw rad · gripper)
 
 Parameters:
-  robot_ip / robot_name / publish_rate / gripper_deadband / servo_mode / robot_home_position
+  robot_ip / robot_name / robot_publish_rate / gripper_deadband / servo_mode / robot_home_position
 
 Services:
   robot/set_servo_mode     std_srvs/SetBool
@@ -66,14 +66,15 @@ class XArmDriverNode(Node):
 
         self.declare_parameter('robot_ip', '192.168.0.244')
         self.declare_parameter('robot_name', 'robot')
-        self.declare_parameter('publish_rate', 15.0)
+        # Prefer robot_publish_rate so /** yaml publish_rate (obs_aggregator) does not collide.
+        self.declare_parameter('robot_publish_rate', 50.0)
         self.declare_parameter('gripper_deadband', 20.0)
         self.declare_parameter('servo_mode', False)
         self.declare_parameter('robot_home_position', [330.0, 0.0, 160.0, 3.14159, 0.0, 0.0, 850.0])
 
         robot_ip = self.get_parameter('robot_ip').get_parameter_value().string_value
         self._robot_name = self.get_parameter('robot_name').get_parameter_value().string_value
-        rate = self.get_parameter('publish_rate').get_parameter_value().double_value
+        rate = self.get_parameter('robot_publish_rate').get_parameter_value().double_value
         self._deadband = self.get_parameter('gripper_deadband').get_parameter_value().double_value
         self._servo_mode = self.get_parameter('servo_mode').get_parameter_value().bool_value
         self._home_position = list(
@@ -94,7 +95,9 @@ class XArmDriverNode(Node):
         if self._servo_mode:
             self._driver.set_arm_mode(1)
             self.get_logger().info('Servo mode (mode 1) active — real-time streaming.')
-        self.get_logger().info(f'Connected to xArm at {robot_ip}')
+        self.get_logger().info(
+            f'Connected to xArm at {robot_ip} — state publish {rate} Hz'
+        )
 
         # --- publishers (relative names → scoped by namespace for multi-robot) ---
         self._pub_joints = self.create_publisher(JointState, 'robot/joint_states', 1) # use relative dir, scoped by namespace for multi-robot

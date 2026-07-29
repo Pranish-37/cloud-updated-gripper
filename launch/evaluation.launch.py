@@ -19,6 +19,7 @@ from launch_ros.actions import Node
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _CONFIG = str(_REPO_ROOT / 'config' / 'evaluation.yaml')
+_SAFETY_CONFIG = str(_REPO_ROOT / 'config' / 'safety.yaml')
 
 
 def _yaml_defaults() -> dict:
@@ -86,6 +87,7 @@ def generate_launch_description():
             name='xarm_driver_node',
             parameters=[
                 _CONFIG,
+                _SAFETY_CONFIG,
                 {'robot_ip': robot_ip},
             ],
             output='screen',

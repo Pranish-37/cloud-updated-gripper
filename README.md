@@ -225,23 +225,34 @@ source install/setup.bash
 ## Teleop
 
 ```bash
-./scripts/launch_teleop.sh                        # default IP, SpaceMouse
+./scripts/launch_teleop.sh                        # default IP, 3-DoF, SpaceMouse
+./scripts/launch_teleop.sh --dof 6                # 6-DoF (xyz + rpy)
 ./scripts/launch_teleop.sh --ip 192.168.0.245     # custom robot IP
-./scripts/launch_teleop.sh --no-spacemouse        # keyboard-only rotation
+./scripts/launch_teleop.sh --no-spacemouse        # full keyboard fallback
 ```
 
-Controls:
+Controls (SpaceMouse available — preferred):
+
+| Input | Action |
+|-------|--------|
+| SpaceMouse x / y / z | EE translation |
+| SpaceMouse roll / pitch / yaw | EE rotation (6-DoF only; locked in 3-DoF) |
+| SpaceMouse left / right | gripper open / close |
+| Q / E | gripper open / close (backup) |
+| Esc | stop |
+
+Controls (keyboard fallback when SpaceMouse unavailable / `--no-spacemouse`):
 
 | Key | Action |
 |-----|--------|
 | W / S | EE +x / -x |
 | A / D | EE +y / -y |
 | Space / Ctrl | EE +z / -z |
-| SpaceMouse cap | roll / pitch / yaw |
-| J/L  I/K  U/O | roll / pitch / yaw (keyboard mode) |
-| Q | gripper open |
-| E | gripper close |
+| J/L  I/K  U/O | roll / pitch / yaw (6-DoF only) |
+| Q / E | gripper open / close |
 | Esc | stop |
+
+In 3-DoF mode, RPY is locked to `robot_home_position` for the whole session.
 
 ---
 
@@ -253,7 +264,7 @@ Controls:
 ./scripts/launch_data_collection.sh --ip 192.168.0.245 --no-spacemouse
 ```
 
-Session config: `config/data_collection.yaml`
+Session config: `config/data_collection.yaml` + `config/teleop.yaml` + `config/safety.yaml`
 
 ---
 

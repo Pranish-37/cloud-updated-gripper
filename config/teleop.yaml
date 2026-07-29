@@ -1,0 +1,32 @@
+# teleop.yaml
+# Teleoperation hyperparameters for teleop_node (standalone teleop + data collection).
+# Loaded by launch_teleop.sh and data_collection.launch.py.
+# Safety envelope / max_step_* live in config/safety.yaml (loaded alongside this file).
+#
+# NOTE: The /** wildcard makes every key available via --params-file.
+
+/**:
+  ros__parameters:
+
+    # ---------------------------------------------------------------------------
+    # Teleop
+    # ---------------------------------------------------------------------------
+    control_hz: 50.0
+    translation_speed: 70.0          # mm/s at full keyboard hold
+    rotation_speed: 10.0             # deg/s keyboard rotation (6-DoF fallback)
+    use_spacemouse: true
+    spacemouse_translation_speed: 120.0    # -1 = mirror translation_speed
+    spacemouse_rotation_speed: 15.0      # deg/s at full deflection
+    spacemouse_translation_deadzone: 0.1
+    spacemouse_rotation_deadzone: 0.2
+    # Keyboard translation axis sense
+    invert_x: true
+    invert_y: true
+    # SpaceMouse device-axis sense (x=left/right, y=forward/back), before robot-frame swap
+    spacemouse_invert_x: false
+    spacemouse_invert_y: true
+    invert_roll: true
+    invert_pitch: true
+    invert_yaw: true
+    # Standalone teleop default; data_collection.launch overrides to true.
+    enable_recording: false

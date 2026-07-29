@@ -1,0 +1,32 @@
+# safety.yaml
+# Shared workspace envelope + anti-爆冲 step caps.
+# Loaded by teleop (standalone + data collection) and xarm_driver.
+#
+# XYZ / RPY limits: enforced by teleop_node every control tick.
+# max_step_*: absolute per-tick / per-command caps (teleop target + action_cmd hard gate).
+# Require min <= max. Roll band should contain home roll (~180°) and not wrap 0°.
+
+/**:
+  ros__parameters:
+
+    # ---------------------------------------------------------------------------
+    # Workspace / attitude envelope
+    # XYZ: mm in robot base frame.  RPY: degrees (roll uses [0,360) near home≈180).
+    # ---------------------------------------------------------------------------
+    x_limits: [270.0, 600.0]
+    y_limits: [-330.0, 330.0]
+    z_limits: [6.0, 240.0]
+    roll_limits: [90.0, 270.0]
+    pitch_limits: [-45.0, 45.0]
+    yaw_limits: [-90.0, 90.0] 
+
+    # ---------------------------------------------------------------------------
+    # Anti-rush: absolute max change per tick / per action_cmd
+    # Driver applies these only on /policy/action_cmd (ExecuteAction / home unaffected).
+    # ---------------------------------------------------------------------------
+    max_step_x_mm: 5.0
+    max_step_y_mm: 5.0
+    max_step_z_mm: 5.0
+    max_step_roll_deg: 2.0
+    max_step_pitch_deg: 2.0
+    max_step_yaw_deg: 2.0

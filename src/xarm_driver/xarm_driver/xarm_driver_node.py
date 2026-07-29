@@ -11,6 +11,8 @@ Subscribes — relative topic name:
 
 Parameters:
   robot_ip / robot_name / robot_publish_rate / gripper_deadband / servo_mode / robot_home_position
+  max_step_x/y/z_mm / max_step_roll/pitch/yaw_deg
+      — absolute per-command step caps on /policy/action_cmd only (safety hard gate)
 
 Services:
   robot/set_servo_mode     std_srvs/SetBool
@@ -60,6 +62,21 @@ def _euler_to_quaternion(roll: float, pitch: float, yaw: float) -> tuple[float, 
     return x, y, z, w
 
 
+def _clamp_delta(prev: float, new: float, max_delta: float) -> float:
+    d = new - prev
+    if abs(d) <= max_delta:
+        return new
+    return prev + math.copysign(max_delta, d)
+
+
+def _clamp_delta_angle_rad(prev: float, new: float, max_delta: float) -> float:
+    """Limit angular step using shortest-path delta (radians)."""
+    d = (new - prev + math.pi) % (2.0 * math.pi) - math.pi
+    if abs(d) <= max_delta:
+        return prev + d
+    return prev + math.copysign(max_delta, d)
+
+
 class XArmDriverNode(Node):
     def __init__(self):
         super().__init__('xarm_driver_node')
@@ -71,6 +88,13 @@ class XArmDriverNode(Node):
         self.declare_parameter('gripper_deadband', 20.0)
         self.declare_parameter('servo_mode', False)
         self.declare_parameter('robot_home_position', [330.0, 0.0, 160.0, 3.14159, 0.0, 0.0, 850.0])
+        # Absolute per-command step caps for /policy/action_cmd (mm / deg).
+        self.declare_parameter('max_step_x_mm', 5.0)
+        self.declare_parameter('max_step_y_mm', 5.0)
+        self.declare_parameter('max_step_z_mm', 5.0)
+        self.declare_parameter('max_step_roll_deg', 2.0)
+        self.declare_parameter('max_step_pitch_deg', 2.0)
+        self.declare_parameter('max_step_yaw_deg', 2.0)
 
         robot_ip = self.get_parameter('robot_ip').get_parameter_value().string_value
         self._robot_name = self.get_parameter('robot_name').get_parameter_value().string_value
@@ -80,6 +104,19 @@ class XArmDriverNode(Node):
         self._home_position = list(
             self.get_parameter('robot_home_position').get_parameter_value().double_array_value
         )  # [x, y, z, roll, pitch, yaw (rad), gripper]
+
+        def _f(name: str) -> float:
+            return self.get_parameter(name).get_parameter_value().double_value
+
+        self._max_step_x = _f('max_step_x_mm')
+        self._max_step_y = _f('max_step_y_mm')
+        self._max_step_z = _f('max_step_z_mm')
+        self._max_step_roll = math.radians(_f('max_step_roll_deg'))
+        self._max_step_pitch = math.radians(_f('max_step_pitch_deg'))
+        self._max_step_yaw = math.radians(_f('max_step_yaw_deg'))
+
+        # Last pose actually sent on /policy/action_cmd; None until first seed.
+        self._last_cmd_pose: list[float] | None = None
 
         # True while move_home is executing — blocks _on_action_cmd to avoid conflicts
         self._resetting = False
@@ -97,6 +134,13 @@ class XArmDriverNode(Node):
             self.get_logger().info('Servo mode (mode 1) active — real-time streaming.')
         self.get_logger().info(
             f'Connected to xArm at {robot_ip} — state publish {rate} Hz'
+        )
+        self.get_logger().info(
+            f'action_cmd max step — xyz mm: '
+            f'({self._max_step_x}, {self._max_step_y}, {self._max_step_z}); '
+            f'rpy deg: ({math.degrees(self._max_step_roll)}, '
+            f'{math.degrees(self._max_step_pitch)}, '
+            f'{math.degrees(self._max_step_yaw)})'
         )
 
         # --- publishers (relative names → scoped by namespace for multi-robot) ---
@@ -182,6 +226,40 @@ class XArmDriverNode(Node):
     # Action command callback
     # ------------------------------------------------------------------
 
+    def _seed_last_cmd_from_feedback(self) -> bool:
+        """Seed last commanded pose from current EE feedback. Returns False on failure."""
+        state = self._driver.get_robot_state(is_radian=True)
+        if state is None:
+            self.get_logger().warn(
+                'action_cmd: cannot seed step limiter from feedback — ignoring command.'
+            )
+            return False
+        ee = state['ee_pose']
+        self._last_cmd_pose = [float(ee[i]) for i in range(6)]
+        self.get_logger().info(
+            f'action_cmd step limiter seeded from feedback: '
+            f'xyz=({self._last_cmd_pose[0]:.1f},{self._last_cmd_pose[1]:.1f},'
+            f'{self._last_cmd_pose[2]:.1f}) mm'
+        )
+        return True
+
+    def _clamp_action_cmd_pose(
+        self,
+        x: float, y: float, z: float,
+        roll: float, pitch: float, yaw: float,
+    ) -> tuple[float, float, float, float, float, float]:
+        """Clamp incoming action_cmd pose vs last commanded pose (absolute step caps)."""
+        assert self._last_cmd_pose is not None
+        px, py, pz, pr, pp, pyaw = self._last_cmd_pose
+        return (
+            _clamp_delta(px, x, self._max_step_x),
+            _clamp_delta(py, y, self._max_step_y),
+            _clamp_delta(pz, z, self._max_step_z),
+            _clamp_delta_angle_rad(pr, roll, self._max_step_roll),
+            _clamp_delta_angle_rad(pp, pitch, self._max_step_pitch),
+            _clamp_delta_angle_rad(pyaw, yaw, self._max_step_yaw),
+        )
+
     def _apply_cartesian_gripper(
         self, x: float, y: float, z: float,
         roll: float, pitch: float, yaw: float, gripper: float,
@@ -204,8 +282,12 @@ class XArmDriverNode(Node):
         if not ok:
             return False, 'move command returned failure code'
 
+        # In servo/teleop streaming, never block on the gripper — a blocking
+        # set_gripper_position stalls this callback while teleop keeps integrating
+        # SpaceMouse into a far-away target, then the next servo cmd 爆冲.
+        gripper_wait = False if self._servo_mode else wait
         if abs(gripper - self._driver.xarm_gripper_pos) > self._deadband:
-            self._driver.set_xarm_gripper(gripper, wait=wait)
+            self._driver.set_xarm_gripper(gripper, wait=gripper_wait)
         return True, 'ok'
 
     def _on_action_cmd(self, msg: Float64MultiArray) -> None:
@@ -218,12 +300,27 @@ class XArmDriverNode(Node):
             )
             return
 
-        x, y, z, roll, pitch, yaw, gripper = data
+        x, y, z, roll, pitch, yaw, gripper = (float(v) for v in data)
+
+        # First streaming command: seed limiter from live feedback, then clamp.
+        if self._last_cmd_pose is None:
+            if not self._seed_last_cmd_from_feedback():
+                return
+
+        x, y, z, roll, pitch, yaw = self._clamp_action_cmd_pose(
+            x, y, z, roll, pitch, yaw,
+        )
+
+        # Streaming topic: never wait — teleop/servo must stay real-time.
         ok, msg_txt = self._apply_cartesian_gripper(
-            x, y, z, roll, pitch, yaw, gripper, wait=True,
+            x, y, z, roll, pitch, yaw, gripper, wait=False,
         )
         if not ok:
             self.get_logger().warn(msg_txt)
+            return
+
+        # Only advance the command chain after a successful send.
+        self._last_cmd_pose = [x, y, z, roll, pitch, yaw]
 
     def _on_execute_action(
         self,
@@ -296,6 +393,8 @@ class XArmDriverNode(Node):
             response.message = str(exc)
             self.get_logger().error(f'[move_home] failed: {exc}')
         finally:
+            # Home moved outside the action_cmd chain — force re-seed from feedback.
+            self._last_cmd_pose = None
             self._resetting = False
         return response
 

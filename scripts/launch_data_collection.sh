@@ -15,7 +15,7 @@
 #   --dof <3|6>           DoF mode                   (default: from YAML)
 #   --task <string>       Task description string    (default: from YAML)
 #   --ip <ip>             Robot IP address           (default: from YAML)
-#   --no-spacemouse       Use keyboard rotation only
+#   --no-spacemouse       Disable SpaceMouse; use full keyboard control
 #   --push-to-hub         Upload dataset to HuggingFace after collection (default: off)
 #   --help                Show this help message
 #
@@ -117,13 +117,14 @@ echo ""
 echo "╔══════════════════════════════════════════════════════════════╗"
 echo "║            CloudGripper V2 — Data Collection                ║"
 echo "╠══════════════════════════════════════════════════════════════╣"
-printf  "║  config    : %-49s║\n" "config/data_collection.yaml"
+printf  "║  config    : %-49s║\n" "data_collection + teleop + safety.yaml"
 DISPLAY_IP="${ROBOT_IP:-$(grep 'robot_ip:' "$CONFIG_FILE" | awk '{print $2}' | tr -d '"' || true)}"
 printf  "║  robot ip  : %-49s║\n" "${DISPLAY_IP}"
+TELEOP_CONFIG_FILE="${REPO_ROOT}/config/teleop.yaml"
 if [[ -n "$USE_SPACEMOUSE" ]]; then
     printf "║  spacemouse: %-49s║\n" "${USE_SPACEMOUSE}"
 else
-    DISPLAY_SM="$(grep 'use_spacemouse:' "$CONFIG_FILE" | awk '{print $2}' || true)"
+    DISPLAY_SM="$(grep 'use_spacemouse:' "$TELEOP_CONFIG_FILE" | awk '{print $2}' || true)"
     printf "║  spacemouse: %-49s║\n" "${DISPLAY_SM:-true}"
 fi
 [[ -n "$DATASET_ROOT" ]] && printf "║  dataset   : %-49s║\n" "${DATASET_ROOT}"
@@ -136,10 +137,11 @@ echo "║    R          toggle recording on/off                        ║"
 echo "║    N          save episode, start next                       ║"
 echo "║    Backspace  discard episode, restart same index            ║"
 echo "║    ESC        finalize dataset and quit                      ║"
-echo "║    W/S A/D    EE +x/-x  +y/-y                               ║"
-echo "║    Space/Ctrl EE +z/-z                                       ║"
-echo "║    SpaceMouse roll / pitch / yaw                             ║"
-echo "║    Q / E      gripper open / close                           ║"
+echo "║    SpaceMouse x/y/z  EE translation (preferred)              ║"
+echo "║    SpaceMouse r/p/y  EE rotation (6-DoF only)                ║"
+echo "║    SpaceMouse L/R    gripper open / close                    ║"
+echo "║    Q / E      gripper open / close (backup)                  ║"
+echo "║    W/S A/D…   keyboard fallback if SpaceMouse unavailable    ║"
 echo "╠══════════════════════════════════════════════════════════════╣"
 echo "║  After launch: call the lock service once camera converges:  ║"
 echo "║    ros2 service call /camera/lock_exposure std_srvs/srv/Trigger ║"

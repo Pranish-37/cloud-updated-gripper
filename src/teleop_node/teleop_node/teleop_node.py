@@ -1,20 +1,24 @@
 """
 teleop_node — ROS 2 keyboard + SpaceMouse teleoperation node.
 
-Control mapping:
-  W/S           → EE +x / -x  (translation)
-  A/D           → EE +y / -y
-  Space/Ctrl    → EE +z / -z
-  J/L I/K U/O   → roll/pitch/yaw (keyboard-only mode)
-  SpaceMouse    → roll/pitch/yaw (when use_spacemouse:=true)
-  Q             → gripper open
-  E             → gripper close
-  Esc           → stop  [+ finalize dataset when enable_recording:=true]
+Control mapping (SpaceMouse available):
+  SpaceMouse x/y/z         → EE translation
+  SpaceMouse roll/pitch/yaw → EE rotation (6-DoF only; ignored in 3-DoF)
+  SpaceMouse left / right  → gripper open / close
+  Q / E                    → gripper open / close (backup)
+  Esc                      → stop  [+ finalize dataset when enable_recording:=true]
+
+Control mapping (SpaceMouse unavailable / use_spacemouse:=false):
+  W/S, A/D, Space/Ctrl     → EE translation
+  J/L I/K U/O              → roll/pitch/yaw (6-DoF only; disabled in 3-DoF)
+  Q / E                    → gripper open / close
+
+3-DoF: RPY is locked to robot_home_position for the whole session.
 
 Recording control (only active when enable_recording:=true):
   R             → toggle recording on/off within current episode
   N             → save episode, start next
-  Backspace     → discard episode, restart same index  (D was moved — conflicts with EE +y)
+  Backspace     → discard episode, restart same index
 
 Subscribes (relative, namespace-scoped):
   robot/ee_pose       geometry_msgs/PoseStamped   — to seed initial target pose
@@ -23,23 +27,24 @@ Subscribes (relative, namespace-scoped):
 Publishes (relative, namespace-scoped):
   policy/action_cmd   std_msgs/Float64MultiArray  (7-vec: x,y,z mm · roll,pitch,yaw rad · gripper)
 
-Calls (when enable_recording:=true):
-  recorder/toggle_recording   std_srvs/Trigger
-  recorder/save_episode       std_srvs/Trigger
-  recorder/discard_episode    std_srvs/Trigger
-  recorder/finalize_dataset   std_srvs/Trigger
-
 Parameters:
-  control_hz          (float, default 50.0)
-  translation_speed   (float, default 50.0   mm/s)
-  rotation_speed      (float, default 10.0   deg/s, keyboard only)
-  use_spacemouse      (bool,  default True)
-  spacemouse_rotation_speed (float, default 30.0)
-  spacemouse_deadzone       (float, default 0.05)
-  invert_x / invert_y       (bool,  default True)
-  invert_roll/pitch/yaw     (bool,  default False)
-  roll/pitch/yaw_scale      (float, default 1.0)
-  enable_recording    (bool,  default False) — enable R/N/D/ESC recorder key bindings
+  dof_mode                    (int,   default 3) — 3 or 6
+  control_hz                  (float, default 50.0)
+  translation_speed           (float, default 50.0 mm/s, keyboard)
+  rotation_speed              (float, default 10.0 deg/s, keyboard)
+  use_spacemouse              (bool,  default True)
+  spacemouse_translation_speed (float, default -1 → use translation_speed)
+  spacemouse_rotation_speed   (float, default 30.0)
+  spacemouse_translation_deadzone (float, default 0.05)
+  spacemouse_rotation_deadzone    (float, default 0.05)
+  invert_x / invert_y         (bool,  default True)  — keyboard translation
+  spacemouse_invert_x/y       (bool,  default False) — SpaceMouse translation
+  invert_roll/pitch/yaw       (bool,  default False)
+  roll/pitch/yaw_scale        (float, default 1.0)
+  x/y/z_limits                ([min,max] mm)
+  roll/pitch/yaw_limits       ([min,max] deg) — 6-DoF only; roll in [0,360)
+  max_step_x/y/z_mm           (float, per-tick absolute mm cap)
+  max_step_roll/pitch/yaw_deg (float, per-tick absolute deg cap)
 
 Note: xarm_driver_node must be started with servo_mode:=true for real-time response.
 """
@@ -58,56 +63,139 @@ from teleop_node.input_handler import TeleopConfig, KeyboardInput, SpaceMouseInp
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:
-    return max(lo, min(hi, v)) # clamp the value between the lower and upper limits
+    return max(lo, min(hi, v))
 
 
 def _wrap_deg(v: float) -> float:
-    """Wrap angle to [-180, 180] degrees.""" # round the angle to the range [-180, 180] degrees
+    """Wrap angle to [-180, 180] degrees (pitch / yaw)."""
     return ((v + 180.0) % 360.0) - 180.0
 
 
+def _wrap_roll_deg(v: float) -> float:
+    """Wrap roll to [0, 360) degrees."""
+    return v % 360.0
+
+
+def _nearest_deg(value: float, reference: float) -> float:
+    """Return value + 360*k closest to reference (continuous branch pick)."""
+    delta = (value - reference + 180.0) % 360.0 - 180.0
+    return reference + delta
+
+
+def _clamp_delta(prev: float, new: float, max_delta: float) -> float:
+    """Limit |new - prev| to max_delta (startup / glitch safety)."""
+    d = new - prev
+    if abs(d) <= max_delta:
+        return new
+    return prev + math.copysign(max_delta, d)
+
+
+def _clamp_delta_angle_deg(prev: float, new: float, max_delta: float) -> float:
+    """Limit angular step using shortest-path delta (degrees)."""
+    d = (new - prev + 180.0) % 360.0 - 180.0
+    if abs(d) <= max_delta:
+        return prev + d
+    return prev + math.copysign(max_delta, d)
+
+
 class TeleopNode(Node):
-    def __init__(self): # TeleopNode 
+    def __init__(self):
         super().__init__('teleop_node')
 
-        # --- declare parameters ---
-        # declare the parameters for the TeleopNode
         self.declare_parameter('control_hz', 50.0)
         self.declare_parameter('translation_speed', 50.0)
         self.declare_parameter('rotation_speed', 10.0)
+        self.declare_parameter('dof_mode', 3)
         self.declare_parameter('use_spacemouse', True)
+        # -1.0 means "mirror translation_speed"
+        self.declare_parameter('spacemouse_translation_speed', -1.0)
         self.declare_parameter('spacemouse_rotation_speed', 30.0)
-        self.declare_parameter('spacemouse_deadzone', 0.05)
+        self.declare_parameter('spacemouse_translation_deadzone', 0.05)
+        self.declare_parameter('spacemouse_rotation_deadzone', 0.05)
         self.declare_parameter('invert_x', True)
         self.declare_parameter('invert_y', True)
+        self.declare_parameter('spacemouse_invert_x', False)
+        self.declare_parameter('spacemouse_invert_y', False)
         self.declare_parameter('invert_roll', False)
         self.declare_parameter('invert_pitch', False)
         self.declare_parameter('invert_yaw', False)
         self.declare_parameter('roll_scale', 1.0)
         self.declare_parameter('pitch_scale', 1.0)
         self.declare_parameter('yaw_scale', 1.0)
+        # Safety envelopes — [min, max]; XYZ mm, RPY degrees
+        self.declare_parameter('x_limits', [200.0, 700.0])
+        self.declare_parameter('y_limits', [-400.0, 400.0])
+        self.declare_parameter('z_limits', [6.0, 600.0])
+        self.declare_parameter('roll_limits', [90.0, 270.0])
+        self.declare_parameter('pitch_limits', [-45.0, 45.0])
+        self.declare_parameter('yaw_limits', [-90.0, 90.0])
+        self.declare_parameter('max_step_x_mm', 5.0)
+        self.declare_parameter('max_step_y_mm', 5.0)
+        self.declare_parameter('max_step_z_mm', 5.0)
+        self.declare_parameter('max_step_roll_deg', 2.0)
+        self.declare_parameter('max_step_pitch_deg', 2.0)
+        self.declare_parameter('max_step_yaw_deg', 2.0)
 
-        # get the parameter values from the parameter server
-        def _f(name): return self.get_parameter(name).get_parameter_value().double_value # float
-        def _b(name): return self.get_parameter(name).get_parameter_value().bool_value # boolean
+        def _f(name): return self.get_parameter(name).get_parameter_value().double_value
+        def _b(name): return self.get_parameter(name).get_parameter_value().bool_value
+        def _i(name): return self.get_parameter(name).get_parameter_value().integer_value
 
-        self._hz = _f('control_hz') # control frequency
-        use_sm   = _b('use_spacemouse') # use SpaceMouse
+        def _lim(name: str) -> tuple[float, float]:
+            v = list(self.get_parameter(name).get_parameter_value().double_array_value)
+            if len(v) != 2:
+                raise ValueError(f'{name} must be [min, max], got {v}')
+            lo, hi = float(v[0]), float(v[1])
+            if lo > hi:
+                raise ValueError(f'{name}: min ({lo}) > max ({hi})')
+            return lo, hi
 
-        cfg = TeleopConfig( # create the TeleopConfig object
-            translation_speed         = _f('translation_speed'),
-            rotation_speed            = _f('rotation_speed'),
-            control_hz                = self._hz,
-            invert_x                  = _b('invert_x'),
-            invert_y                  = _b('invert_y'),
-            spacemouse_rotation_speed = _f('spacemouse_rotation_speed'),
-            spacemouse_deadzone       = _f('spacemouse_deadzone'),
-            invert_roll               = _b('invert_roll'),
-            invert_pitch              = _b('invert_pitch'),
-            invert_yaw                = _b('invert_yaw'),
-            roll_scale                = _f('roll_scale'),
-            pitch_scale               = _f('pitch_scale'),
-            yaw_scale                 = _f('yaw_scale'),
+        self._hz = _f('control_hz')
+        use_sm = _b('use_spacemouse')
+        self._dof = _i('dof_mode')
+        if self._dof not in (3, 6):
+            raise ValueError(f'dof_mode must be 3 or 6, got {self._dof}')
+
+        translation_speed = _f('translation_speed')
+        sm_ts = _f('spacemouse_translation_speed')
+        if sm_ts < 0.0:
+            sm_ts = translation_speed
+
+        x_lim, y_lim, z_lim = _lim('x_limits'), _lim('y_limits'), _lim('z_limits')
+        roll_lim, pitch_lim, yaw_lim = (
+            _lim('roll_limits'), _lim('pitch_limits'), _lim('yaw_limits'),
+        )
+
+        cfg = TeleopConfig(
+            translation_speed=translation_speed,
+            rotation_speed=_f('rotation_speed'),
+            control_hz=self._hz,
+            dof_mode=self._dof,
+            invert_x=_b('invert_x'),
+            invert_y=_b('invert_y'),
+            x_limits=x_lim,
+            y_limits=y_lim,
+            z_limits=z_lim,
+            roll_limits=roll_lim,
+            pitch_limits=pitch_lim,
+            yaw_limits=yaw_lim,
+            max_step_x_mm=_f('max_step_x_mm'),
+            max_step_y_mm=_f('max_step_y_mm'),
+            max_step_z_mm=_f('max_step_z_mm'),
+            max_step_roll_deg=_f('max_step_roll_deg'),
+            max_step_pitch_deg=_f('max_step_pitch_deg'),
+            max_step_yaw_deg=_f('max_step_yaw_deg'),
+            spacemouse_translation_speed=sm_ts,
+            spacemouse_rotation_speed=_f('spacemouse_rotation_speed'),
+            spacemouse_translation_deadzone=_f('spacemouse_translation_deadzone'),
+            spacemouse_rotation_deadzone=_f('spacemouse_rotation_deadzone'),
+            spacemouse_invert_x=_b('spacemouse_invert_x'),
+            spacemouse_invert_y=_b('spacemouse_invert_y'),
+            invert_roll=_b('invert_roll'),
+            invert_pitch=_b('invert_pitch'),
+            invert_yaw=_b('invert_yaw'),
+            roll_scale=_f('roll_scale'),
+            pitch_scale=_f('pitch_scale'),
+            yaw_scale=_f('yaw_scale'),
         )
 
         self.declare_parameter('enable_recording', False)
@@ -117,7 +205,6 @@ class TeleopNode(Node):
         _home_raw = list(
             self.get_parameter('robot_home_position').get_parameter_value().double_array_value
         )  # [x, y, z, roll, pitch, yaw (rad), gripper]
-        # Convert orientation to degrees — teleop's _target stores angles in degrees
         self._home_target = [
             _home_raw[0], _home_raw[1], _home_raw[2],
             math.degrees(_home_raw[3]),
@@ -125,51 +212,58 @@ class TeleopNode(Node):
             math.degrees(_home_raw[5]),
         ]
         self._home_gripper = _home_raw[6]
-        self._homing = False  # True while a move_home is in flight — prevents queuing duplicates
+        self._homing = False
 
         self._cfg = cfg
         self._keyboard = KeyboardInput(cfg)
-        # create the SpaceMouseInput object if use_spacemouse is True, otherwise None
         self._spacemouse: SpaceMouseInput | None = SpaceMouseInput(cfg) if use_sm else None
 
-        # target pose [x,y,z mm, roll,pitch,yaw deg] — seeded independently from robot topics
-        self._target = [300.0, 0.0, 300.0, 180.0, 0.0, 0.0]
+        # target pose [x,y,z mm, roll,pitch,yaw deg]
+        self._target = [
+            300.0, 0.0, 300.0,
+            self._home_target[3], self._home_target[4], self._home_target[5],
+        ]
+        self._locked_rpy = list(self._home_target[3:6])  # frozen in 3-DoF after seed
         self._gripper = cfg.gripper_close_val
-        self._target_seeded = False   # True once ee_pose received
-        self._gripper_seeded = False  # True once gripper_pos received
-
-        # recording state (mirrors recorder_node state for HUD display)
+        self._target_seeded = False
+        self._gripper_seeded = False
         self._is_recording = False
 
-        # --- subscribers to seed initial pose ---
         self.create_subscription(PoseStamped, 'robot/ee_pose', self._on_ee_pose, 1)
         self.create_subscription(Float64, 'robot/gripper_pos', self._on_gripper, 1)
-
-        # --- publisher ---
         self._pub = self.create_publisher(Float64MultiArray, 'policy/action_cmd', 1)
 
-        # --- recorder service clients (only created when enable_recording is True) ---
-        self._rec_toggle_client   = None
-        self._rec_save_client     = None
-        self._rec_discard_client  = None
+        self._rec_toggle_client = None
+        self._rec_save_client = None
+        self._rec_discard_client = None
         self._rec_finalize_client = None
-        self._move_home_client    = None
+        self._move_home_client = None
 
         if self._enable_recording:
-            self._rec_toggle_client   = self.create_client(Trigger, 'recorder/toggle_recording')
-            self._rec_save_client     = self.create_client(Trigger, 'recorder/save_episode')
-            self._rec_discard_client  = self.create_client(Trigger, 'recorder/discard_episode')
+            self._rec_toggle_client = self.create_client(Trigger, 'recorder/toggle_recording')
+            self._rec_save_client = self.create_client(Trigger, 'recorder/save_episode')
+            self._rec_discard_client = self.create_client(Trigger, 'recorder/discard_episode')
             self._rec_finalize_client = self.create_client(Trigger, 'recorder/finalize_dataset')
-            self._move_home_client    = self.create_client(Trigger, 'robot/move_home')
+            self._move_home_client = self.create_client(Trigger, 'robot/move_home')
             self.get_logger().info(
-                'Recording mode enabled — R=toggle  N=save  D=discard  ESC=finalize+quit'
+                'Recording mode enabled — R=toggle  N=save  Bksp=discard  ESC=finalize+quit'
             )
 
         self.get_logger().info(
-            f'TeleopNode ready — {self._hz} Hz, '
+            f'TeleopNode ready — {self._dof}-DoF, {self._hz} Hz, '
             f'SpaceMouse={"on" if use_sm else "off"}, '
-            f'recording={"on" if self._enable_recording else "off"}. '
-            f'Open pygame window and start controlling.'
+            f'sm_trans={sm_ts:.1f} mm/s, '
+            f'recording={"on" if self._enable_recording else "off"}.'
+        )
+        self.get_logger().info(
+            f'Safety limits — xyz mm: x={x_lim}, y={y_lim}, z={z_lim}; '
+            f'rpy deg: roll={roll_lim}, pitch={pitch_lim}, yaw={yaw_lim}'
+        )
+        self.get_logger().info(
+            f'Max step/tick — xyz mm: '
+            f'({cfg.max_step_x_mm}, {cfg.max_step_y_mm}, {cfg.max_step_z_mm}); '
+            f'rpy deg: ({cfg.max_step_roll_deg}, {cfg.max_step_pitch_deg}, '
+            f'{cfg.max_step_yaw_deg})'
         )
 
     # ------------------------------------------------------------------
@@ -179,21 +273,25 @@ class TeleopNode(Node):
     def _on_ee_pose(self, msg: PoseStamped) -> None:
         if self._target_seeded:
             return
-        # Recover euler angles from quaternion (ZYX) — inverse of xarm_driver's encoding
         q = msg.pose.orientation
-        roll  = math.atan2(2*(q.w*q.x + q.y*q.z), 1 - 2*(q.x*q.x + q.y*q.y))
-        pitch = math.asin(max(-1.0, min(1.0, 2*(q.w*q.y - q.z*q.x))))
-        yaw   = math.atan2(2*(q.w*q.z + q.x*q.y), 1 - 2*(q.y*q.y + q.z*q.z))
+        roll = math.atan2(2 * (q.w * q.x + q.y * q.z), 1 - 2 * (q.x * q.x + q.y * q.y))
+        pitch = math.asin(max(-1.0, min(1.0, 2 * (q.w * q.y - q.z * q.x))))
+        yaw = math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
         p = msg.pose.position
-        self._target = [
-            p.x, p.y, p.z,
-            math.degrees(roll), math.degrees(pitch), math.degrees(yaw),
-        ]
+
+        # Keep roll on the branch nearest home (≈180°) so we never command a
+        # ±π discontinuity into servo mode on the first tick.
+        r_deg = _nearest_deg(_wrap_roll_deg(math.degrees(roll)), self._home_target[3])
+        p_deg = math.degrees(pitch)
+        y_deg = math.degrees(yaw)
+
+        self._target = [p.x, p.y, p.z, r_deg, p_deg, y_deg]
+        self._locked_rpy = [r_deg, p_deg, y_deg]
         self._target_seeded = True
         self.get_logger().info(
-            f'Target seeded: '
-            f'xyz=({p.x:.1f},{p.y:.1f},{p.z:.1f}) mm  '
-            f'rpy=({math.degrees(roll):.1f},{math.degrees(pitch):.1f},{math.degrees(yaw):.1f}) deg'
+            f'Target seeded: xyz=({p.x:.1f},{p.y:.1f},{p.z:.1f}) mm  '
+            f'rpy=({r_deg:.1f},{p_deg:.1f},{y_deg:.1f}) deg'
+            + (' [3-DoF RPY locked]' if self._dof == 3 else '')
         )
 
     def _on_gripper(self, msg: Float64) -> None:
@@ -208,14 +306,11 @@ class TeleopNode(Node):
     # ------------------------------------------------------------------
 
     def _call_recorder(self, client, name: str) -> None:
-        """Fire-and-forget async service call with a log callback."""
         if client is None or not client.service_is_ready():
             self.get_logger().warn(f'Recorder service not ready: {name}')
             return
         future = client.call_async(Trigger.Request())
-        future.add_done_callback(
-            lambda f: self._on_recorder_response(f, name)
-        )
+        future.add_done_callback(lambda f: self._on_recorder_response(f, name))
 
     def _on_recorder_response(self, future, name: str) -> None:
         try:
@@ -248,8 +343,6 @@ class TeleopNode(Node):
             self.get_logger().warn('Recorder not ready — discard skipped.')
 
     def _reset_to_home(self) -> None:
-        """Snap the teleop target to home and command the robot to move there.
-        Guarded by _homing to prevent queuing multiple concurrent moves."""
         if self._homing:
             self.get_logger().warn('move_home already in flight — ignoring duplicate request.')
             return
@@ -259,6 +352,7 @@ class TeleopNode(Node):
 
         self._homing = True
         self._target = list(self._home_target)
+        self._locked_rpy = list(self._home_target[3:6])
         self._gripper = self._home_gripper
         self.get_logger().info(
             f'Resetting robot to home: xyz=({self._home_target[0]},{self._home_target[1]},'
@@ -294,36 +388,51 @@ class TeleopNode(Node):
         if self._spacemouse:
             try:
                 self._spacemouse.start()
-                self.get_logger().info('SpaceMouse opened.')
+                self.get_logger().info('SpaceMouse opened — waiting for center (release cap)...')
             except Exception as e:
-                self.get_logger().warn(f'SpaceMouse unavailable: {e} — falling back to keyboard rotation.')
+                self.get_logger().warn(
+                    f'SpaceMouse unavailable: {e} — falling back to keyboard control.'
+                )
                 self._spacemouse = None
 
         dt = 1.0 / self._hz
         cfg = self._cfg
 
-        # Build recorder keydown callbacks (only populated when recording is enabled)
         recorder_callbacks: dict = {}
         if self._enable_recording:
             recorder_callbacks = {
-                pygame.K_r:         self._toggle_recording,
-                pygame.K_n:         self._save_episode,
+                pygame.K_r: self._toggle_recording,
+                pygame.K_n: self._save_episode,
                 pygame.K_BACKSPACE: self._discard_episode,
-                pygame.K_ESCAPE:    self._finalize_dataset,
+                pygame.K_ESCAPE: self._finalize_dataset,
             }
 
-        # Wait until both robot topics have been received before starting control.
-        # This guarantees _target reflects the real EE position, not the default value.
         self.get_logger().info('Waiting for robot state seed (ee_pose + gripper_pos)...')
         while rclpy.ok() and not (self._target_seeded and self._gripper_seeded):
             rclpy.spin_once(self, timeout_sec=0.1)
-        self.get_logger().info('Robot state seeded — starting control loop.')
+        self.get_logger().info('Robot state seeded.')
+
+        # Arm SpaceMouse only after it reports centered — avoids startup 爆冲 from
+        # residual HID deflection before the operator touches anything.
+        if self._spacemouse is not None:
+            t_arm0 = time.perf_counter()
+            while rclpy.ok() and not self._spacemouse.is_centered():
+                rclpy.spin_once(self, timeout_sec=0.0)
+                if time.perf_counter() - t_arm0 > 10.0:
+                    self.get_logger().warn(
+                        'SpaceMouse not centered after 10 s — arming anyway; '
+                        'release the cap if motion feels wrong.'
+                    )
+                    break
+                time.sleep(0.02)
+            self._spacemouse.arm()
+            self.get_logger().info('SpaceMouse armed — control active.')
+
+        self.get_logger().info('Starting control loop.')
 
         try:
             while rclpy.ok() and not self._keyboard.stop_requested:
                 t0 = time.perf_counter()
-
-                # spin once to keep ROS callbacks alive
                 rclpy.spin_once(self, timeout_sec=0.0)
 
                 rec_status = 'REC' if self._is_recording else ('PAUSED' if self._enable_recording else '')
@@ -338,20 +447,39 @@ class TeleopNode(Node):
                 if stop:
                     break
 
-                # accumulate target pose
-                x, y, z, roll, pitch, yaw = self._target
-                x     = _clamp(x     + vx      * dt, *cfg.x_limits)
-                y     = _clamp(y     + vy      * dt, *cfg.y_limits)
-                z     = _clamp(z     + vz      * dt, *cfg.z_limits)
-                roll  = _wrap_deg(roll  + v_roll  * dt)
-                pitch = _wrap_deg(pitch + v_pitch * dt)
-                yaw   = _wrap_deg(yaw   + v_yaw   * dt)
+                prev_x, prev_y, prev_z, prev_roll, prev_pitch, prev_yaw = self._target
+                x = _clamp(prev_x + vx * dt, *cfg.x_limits)
+                y = _clamp(prev_y + vy * dt, *cfg.y_limits)
+                z = _clamp(prev_z + vz * dt, *cfg.z_limits)
+
+                if self._dof == 3:
+                    roll, pitch, yaw = self._locked_rpy
+                else:
+                    roll = _clamp(_wrap_roll_deg(prev_roll + v_roll * dt), *cfg.roll_limits)
+                    pitch = _clamp(_wrap_deg(prev_pitch + v_pitch * dt), *cfg.pitch_limits)
+                    yaw = _clamp(_wrap_deg(prev_yaw + v_yaw * dt), *cfg.yaw_limits)
+
+                # Anti-爆冲: absolute per-tick step caps from yaml.
+                x = _clamp_delta(prev_x, x, cfg.max_step_x_mm)
+                y = _clamp_delta(prev_y, y, cfg.max_step_y_mm)
+                z = _clamp_delta(prev_z, z, cfg.max_step_z_mm)
+                if self._dof == 6:
+                    roll = _clamp_delta_angle_deg(prev_roll, roll, cfg.max_step_roll_deg)
+                    pitch = _clamp_delta_angle_deg(prev_pitch, pitch, cfg.max_step_pitch_deg)
+                    yaw = _clamp_delta_angle_deg(prev_yaw, yaw, cfg.max_step_yaw_deg)
+                    roll = _clamp(_wrap_roll_deg(roll), *cfg.roll_limits)
+                    pitch = _clamp(_wrap_deg(pitch), *cfg.pitch_limits)
+                    yaw = _clamp(_wrap_deg(yaw), *cfg.yaw_limits)
+                # Re-apply workspace envelope after delta clamp.
+                x = _clamp(x, *cfg.x_limits)
+                y = _clamp(y, *cfg.y_limits)
+                z = _clamp(z, *cfg.z_limits)
+
                 self._target = [x, y, z, roll, pitch, yaw]
 
                 if gripper_cmd is not None:
                     self._gripper = gripper_cmd
 
-                # publish 7-vector: x,y,z mm · roll,pitch,yaw rad · gripper
                 msg = Float64MultiArray()
                 msg.data = [
                     x, y, z,
@@ -362,7 +490,6 @@ class TeleopNode(Node):
                 ]
                 self._pub.publish(msg)
 
-                # rate limiting
                 elapsed = time.perf_counter() - t0
                 if elapsed < dt:
                     time.sleep(dt - elapsed)

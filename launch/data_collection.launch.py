@@ -1,10 +1,13 @@
 """
 data_collection.launch.py — full teleop data collection stack.
 
-All session parameters live in config/data_collection.yaml.
-This launch file only wires nodes together; CLI launch args override a
-small subset (dataset path, episodes, dof, task, push_to_hub, robot_ip,
-use_spacemouse).
+Session parameters live in:
+  config/data_collection.yaml  — dataset, camera, robot, recorder, obs
+  config/teleop.yaml           — teleop_node controls (SpaceMouse / keyboard)
+  config/safety.yaml           — XYZ/RPY envelope + anti-爆冲 max_step_*
+
+CLI launch args override a small subset (dataset path, episodes, dof, task,
+push_to_hub, robot_ip, use_spacemouse).
 
 Usage:
   ros2 launch launch/data_collection.launch.py
@@ -22,16 +25,19 @@ from launch_ros.actions import Node
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _CONFIG = str(_REPO_ROOT / 'config' / 'data_collection.yaml')
+_TELEOP_CONFIG = str(_REPO_ROOT / 'config' / 'teleop.yaml')
+_SAFETY_CONFIG = str(_REPO_ROOT / 'config' / 'safety.yaml')
 
 
-def _yaml_defaults() -> dict:
-    with open(_CONFIG) as f:
+def _yaml_defaults(path: str) -> dict:
+    with open(path) as f:
         data = yaml.safe_load(f)
     return data.get('/**', {}).get('ros__parameters', {})
 
 
 def generate_launch_description():
-    cfg = _yaml_defaults()
+    cfg = _yaml_defaults(_CONFIG)
+    teleop_cfg = _yaml_defaults(_TELEOP_CONFIG)
 
     # CLI-overridable launch args (defaults from YAML)
     total_episodes  = LaunchConfiguration('total_episodes')
@@ -60,7 +66,7 @@ def generate_launch_description():
             'robot_ip', default_value=str(cfg.get('robot_ip', '192.168.0.244'))),
         DeclareLaunchArgument(
             'use_spacemouse',
-            default_value=str(cfg.get('use_spacemouse', True)).lower()),
+            default_value=str(teleop_cfg.get('use_spacemouse', True)).lower()),
 
         Node(
             package='realsense2_camera',
@@ -85,6 +91,7 @@ def generate_launch_description():
             name='xarm_driver_node',
             parameters=[
                 _CONFIG,
+                _SAFETY_CONFIG,
                 {'robot_ip': robot_ip},
             ],
             output='screen',
@@ -130,7 +137,13 @@ def generate_launch_description():
             name='teleop_node',
             parameters=[
                 _CONFIG,
-                {'use_spacemouse': use_spacemouse},
+                _TELEOP_CONFIG,
+                _SAFETY_CONFIG,
+                {
+                    'dof_mode': dof_mode,
+                    'use_spacemouse': use_spacemouse,
+                    'enable_recording': True,
+                },
             ],
             output='screen',
         ),

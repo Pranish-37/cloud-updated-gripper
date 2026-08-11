@@ -11,20 +11,20 @@
     # ---------------------------------------------------------------------------
     # Policy
     # ---------------------------------------------------------------------------
-    policy_path: "/workspace/policy/030000/pretrained_model"
-    dataset_meta_path: "/workspace/data/rgb_stacking"   # dataset root with meta/info.json
+    policy_path: "/workspace/policy/peg_in_hole/030000/pretrained_model"
+    dataset_meta_path: "/workspace/data/peg_in_hole"   # dataset root with meta/info.json
     device: "cuda"                                      # cuda or cpu (auto-fallback to cpu)
 
     # chunk_size: policy one-shot output length (ACT: chunk_size, Diffusion: horizon)
     # n_action_steps: controller executes the first N steps of that chunk, then re-queries
     chunk_size: 16          # must match policy config.json (error on mismatch)
     n_action_steps: 8       # compared to policy config.json (warning on mismatch)
-    max_steps_per_episode: 800
+    max_steps_per_episode: 2000
     fps: 5.0                # control loop rate (must match obs_aggregator publish_rate)
     dof_mode: 3             # 3 or 6
     default_rpy: [3.14159, 0.0, 0.0]   # pad target for 3-DoF policies
 
-    eval_output_dir: "/workspace/eval_outputs/0717_4"
+    eval_output_dir: "/workspace/eval_outputs/peg_in_hole"
 
     # ---------------------------------------------------------------------------
     # Camera — must match training dataset resolution
@@ -34,7 +34,7 @@
     enable_depth:  false
     enable_infra1: false
     enable_infra2: false
-    rgb_camera.color_profile: "1920x1080x15"
+    rgb_camera.color_profile: "640x480x15"
     rgb_camera.color_format: "RGB8"
     realsense_node_name: "camera/camera"
 
@@ -48,11 +48,12 @@
     # Robot — position mode for policy rollout (blocking moves)
     # ---------------------------------------------------------------------------
     robot_ip: "192.168.0.244"
-    robot_home_position: [330.0, 0.0, 160.0, 3.14159, 0.0, 0.0, 850.0]
+    # robot_home_position: [330.0, 0.0, 160.0, 3.14159, 0.0, 0.0, 850.0]
+    robot_home_position: [300.0, 0.0, 100.0, 3.14159, 0.0, 0.0, 850.0] 
     servo_mode: false
     robot_publish_rate: 50.0  # xarm_driver state Hz
     # Safety / max_step_*: config/safety.yaml (loaded by evaluation.launch)
     publish_rate: 15.0         # obs_aggregator ObsFrame Hz — keep in sync with fps
     state_buffer_sec: 0.5
     state_stamp_mismatch_warn_ms: 5.0
-    state_image_match_warn_ms: 50.0
+    state_image_match_warn_ms: 300.0

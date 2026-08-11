@@ -73,7 +73,12 @@ def generate_launch_description():
             executable='realsense2_camera_node',
             name='camera',
             namespace='camera',
-            parameters=[_CONFIG],
+            parameters=[
+                _CONFIG,
+                # Explicit inline override: the /**-wildcard YAML does not reliably deliver
+                # dot-notation sub-namespace keys (rgb_camera.*) to namespaced nodes.
+                {'rgb_camera.color_profile': cfg.get('rgb_camera.color_profile', '640x480x15')},
+            ],
             output='screen',
         ),
 
@@ -126,6 +131,10 @@ def generate_launch_description():
                     'dof_mode':        dof_mode,
                     'task':            task,
                     'push_to_hub':     push_to_hub,
+                    # Explicit overrides: ensure recorder feature shape matches the
+                    # camera profile set above, bypassing /**-wildcard delivery issues.
+                    'image_height':    cfg.get('image_height', 480),
+                    'image_width':     cfg.get('image_width', 640),
                 },
             ],
             output='screen',

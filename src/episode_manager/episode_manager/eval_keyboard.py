@@ -23,6 +23,13 @@ class EvalAbortEpisode(Exception):
     """User pressed S — stop current episode, mark failure, go to next."""
 
 
+class EvalMarkOutcome(Exception):
+    """User pressed Y or N mid-episode to immediately mark success/failure."""
+    def __init__(self, success: bool) -> None:
+        self.success = success
+        super().__init__('success' if success else 'failure')
+
+
 @dataclass
 class EvalKeyEvent:
     confirm: bool = False
@@ -89,9 +96,9 @@ class EvalKeyboard:
             (self._hint, _DIM),
             ('', _FG),
             ('Enter / Space  confirm (start eval / start episode)', _DIM),
-            ('Y               success → home → next episode', _DIM),
-            ('N               failure → home → next episode', _DIM),
-            ('S               abort episode (fail) → home → next', _DIM),
+            ('Y               success → stop now → home → next', _DIM),
+            ('N               failure → stop now → home → next', _DIM),
+            ('S               abort (fail) → stop now → home → next', _DIM),
             ('Esc             quit evaluation', _DIM),
         ):
             if line:

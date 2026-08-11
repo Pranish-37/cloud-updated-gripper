@@ -1,8 +1,10 @@
 # safety.yaml
-# Shared workspace envelope + anti-爆冲 step caps.
-# Loaded by teleop (standalone + data collection) and xarm_driver.
+# Shared safety + home-position config.
+# Loaded by xarm_driver and teleop_node in all launch contexts (teleop + data collection).
 #
-# XYZ / RPY limits: enforced by teleop_node every control tick.
+# robot_home_position: used by xarm_driver on startup and /robot/move_home service.
+# XYZ limits: enforced by teleop_node and xarm_driver (same params).
+# RPY limits: teleop_node only (degrees; roll uses [0,360) near home≈180).
 # max_step_*: absolute per-tick / per-command caps (teleop target + action_cmd hard gate).
 # Require min <= max. Roll band should contain home roll (~180°) and not wrap 0°.
 
@@ -15,10 +17,16 @@
     # ---------------------------------------------------------------------------
     x_limits: [270.0, 600.0]
     y_limits: [-330.0, 330.0]
-    z_limits: [6.0, 240.0]
+    z_limits: [-20.0, 240.0]
     roll_limits: [90.0, 270.0]
     pitch_limits: [-45.0, 45.0]
     yaw_limits: [-90.0, 90.0] 
+
+    # ---------------------------------------------------------------------------
+    # Home position: shared between xarm_driver (move_home) and teleop contexts.
+    # [x mm, y mm, z mm, roll rad, pitch rad, yaw rad, gripper (0–850)]
+    # ---------------------------------------------------------------------------
+    robot_home_position: [300.0, 0.0, 100.0, 3.14159, 0.0, 0.0, 850.0]
 
     # ---------------------------------------------------------------------------
     # Anti-rush: absolute max change per tick / per action_cmd

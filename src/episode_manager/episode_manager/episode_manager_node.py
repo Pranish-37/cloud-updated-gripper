@@ -43,7 +43,9 @@ from std_srvs.srv import Trigger
 
 from cloudgripper_msgs.msg import ObsFrame
 from cloudgripper_msgs.srv import ExecuteAction, PredictActionChunk
-from episode_manager.eval_keyboard import EvalAbortEpisode, EvalKeyboard, EvalQuit
+from episode_manager.eval_keyboard import (
+    EvalAbortEpisode, EvalKeyboard, EvalMarkOutcome, EvalQuit,
+)
 
 
 def _pad_rpy(action: list[float], rpy: list[float]) -> list[float]:
@@ -90,6 +92,7 @@ class EpisodeManagerNode(Node):
         self._load_episode_summaries()
 
         self._kb: EvalKeyboard | None = None
+        self._accept_outcome: bool = False  # True while episode is running
 
         self.create_subscription(ObsFrame, 'observation/frame', self._on_obs_frame, 1)
 
@@ -147,6 +150,11 @@ class EpisodeManagerNode(Node):
             raise EvalQuit()
         if ev.stop_episode:
             raise EvalAbortEpisode()
+        if self._accept_outcome:
+            if ev.yes:
+                raise EvalMarkOutcome(True)
+            if ev.no:
+                raise EvalMarkOutcome(False)
 
     def _wait_confirm(self, status: str) -> None:
         assert self._kb is not None
@@ -284,7 +292,7 @@ class EpisodeManagerNode(Node):
         if not self._call_trigger(self._reset_client, 'inference/reset'):
             return
 
-        self._kb.set_prompt(f'Episode {self._episode_index} running...', 'S abort / Esc quit')
+        self._kb.set_prompt(f'Episode {self._episode_index} running...', 'Y success / N failure / S abort / Esc quit')
         cached_chunk: list[list[float]] | None = None
         step_dt = 1.0 / self._fps
         executed_steps = 0
@@ -292,6 +300,8 @@ class EpisodeManagerNode(Node):
         self._episode_image_dir(episode_idx).mkdir(parents=True, exist_ok=True)
 
         aborted = False
+        early_outcome: bool | None = None  # set when Y/N pressed mid-episode
+        self._accept_outcome = True
         try:
             for step in range(self._max_steps):
                 self._spin_and_poll()
@@ -335,14 +345,26 @@ class EpisodeManagerNode(Node):
                 executed_steps += 1
 
                 if step_dt > 0:
-                    # Poll S/Esc during post-move sleep (old precise_sleep(dt))
+                    # Poll Y/N/S/Esc during post-move sleep
                     t_end = time.monotonic() + step_dt
                     while time.monotonic() < t_end:
                         self._spin_and_poll()
                         time.sleep(min(0.05, max(0.0, t_end - time.monotonic())))
 
-            success = self._wait_outcome(
-                f'Episode {episode_idx} done — mark success (Y) or failure (N)'
+            # Loop exhausted max_steps — ask for outcome unless already given
+            if early_outcome is None:
+                self._accept_outcome = False
+                success = self._wait_outcome(
+                    f'Episode {episode_idx} done — mark success (Y) or failure (N)'
+                )
+            else:
+                success = early_outcome
+        except EvalMarkOutcome as e:
+            early_outcome = e.success
+            success = e.success
+            self.get_logger().info(
+                f'Episode {episode_idx} marked {"success" if success else "failure"} '
+                f'by user ({"Y" if success else "N"}) — stopping execution.'
             )
         except EvalAbortEpisode:
             aborted = True
@@ -350,6 +372,8 @@ class EpisodeManagerNode(Node):
             self.get_logger().info(
                 f'Episode {episode_idx} stopped by user (S) — marking failure.'
             )
+        finally:
+            self._accept_outcome = False
 
         self._episodes.append({
             'episode_index': episode_idx,

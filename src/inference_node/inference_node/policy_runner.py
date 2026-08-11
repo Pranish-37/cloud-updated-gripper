@@ -114,8 +114,11 @@ def obs_frame_to_values(frame: ObsFrame, ds_features: dict) -> dict:
     values = {name: float(state[i]) for i, name in enumerate(state_names)}
     values['front'] = image
     # Diagnostic feature present on newer datasets; ignored by policy input_features.
+    # Key must match ds_features['observation.timestamp_delta_ms']['names'][0] == 'delta_ms',
+    # which is what build_dataset_frame uses to look up values.
     if 'observation.timestamp_delta_ms' in ds_features:
-        values['timestamp_delta_ms'] = float(frame.timestamp_delta_ms)
+        name = ds_features['observation.timestamp_delta_ms']['names'][0]
+        values[name] = float(frame.timestamp_delta_ms)
     return values
 
 

@@ -11,6 +11,7 @@ Subscribes — relative topic name:
 
 Parameters:
   robot_ip / robot_name / robot_publish_rate / gripper_deadband / servo_mode / robot_home_position
+  x/y/z_limits — workspace envelope [min,max] mm (from config/safety.yaml)
   max_step_x/y/z_mm / max_step_roll/pitch/yaw_deg
       — absolute per-command step caps on /policy/action_cmd only (safety hard gate)
 
@@ -32,6 +33,8 @@ import math
 
 import rclpy
 from rclpy.node import Node
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
 from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64, Float64MultiArray
@@ -39,13 +42,6 @@ from std_srvs.srv import SetBool, Trigger
 
 from cloudgripper_msgs.srv import ExecuteAction
 from xarm_driver.driver import XArmDriver
-
-# Workspace limits (mm)
-_WS = {
-    'x': (200.0, 700.0),
-    'y': (-400.0, 400.0),
-    'z': (6.0, 600.0),
-}
 
 JOINT_NAMES = [f'joint_{i}' for i in range(7)]
 
@@ -88,6 +84,10 @@ class XArmDriverNode(Node):
         self.declare_parameter('gripper_deadband', 20.0)
         self.declare_parameter('servo_mode', False)
         self.declare_parameter('robot_home_position', [330.0, 0.0, 160.0, 3.14159, 0.0, 0.0, 850.0])
+        # Workspace envelope (mm) — shared with teleop via config/safety.yaml
+        self.declare_parameter('x_limits', [200.0, 700.0])
+        self.declare_parameter('y_limits', [-400.0, 400.0])
+        self.declare_parameter('z_limits', [6.0, 600.0])
         # Absolute per-command step caps for /policy/action_cmd (mm / deg).
         self.declare_parameter('max_step_x_mm', 5.0)
         self.declare_parameter('max_step_y_mm', 5.0)
@@ -107,6 +107,19 @@ class XArmDriverNode(Node):
 
         def _f(name: str) -> float:
             return self.get_parameter(name).get_parameter_value().double_value
+
+        def _lim(name: str) -> tuple[float, float]:
+            v = list(self.get_parameter(name).get_parameter_value().double_array_value)
+            if len(v) != 2:
+                raise ValueError(f'{name} must be [min, max], got {v}')
+            lo, hi = float(v[0]), float(v[1])
+            if lo > hi:
+                raise ValueError(f'{name}: min ({lo}) > max ({hi})')
+            return lo, hi
+
+        self._x_limits = _lim('x_limits')
+        self._y_limits = _lim('y_limits')
+        self._z_limits = _lim('z_limits')
 
         self._max_step_x = _f('max_step_x_mm')
         self._max_step_y = _f('max_step_y_mm')
@@ -136,6 +149,10 @@ class XArmDriverNode(Node):
             f'Connected to xArm at {robot_ip} — state publish {rate} Hz'
         )
         self.get_logger().info(
+            f'Workspace — xyz mm: x={self._x_limits}, y={self._y_limits}, '
+            f'z={self._z_limits}'
+        )
+        self.get_logger().info(
             f'action_cmd max step — xyz mm: '
             f'({self._max_step_x}, {self._max_step_y}, {self._max_step_z}); '
             f'rpy deg: ({math.degrees(self._max_step_roll)}, '
@@ -143,10 +160,17 @@ class XArmDriverNode(Node):
             f'{math.degrees(self._max_step_yaw)})'
         )
 
+        # Callback groups so the state-publish timer can fire while a blocking
+        # execute_action / move_home service call is in progress.
+        # _state_cbg  : dedicated thread for the 50 Hz timer → never starved
+        # _robot_cbg  : single thread for all robot-mutating calls (mutual exclusion)
+        self._state_cbg = MutuallyExclusiveCallbackGroup()
+        self._robot_cbg = MutuallyExclusiveCallbackGroup()
+
         # --- publishers (relative names → scoped by namespace for multi-robot) ---
-        self._pub_joints = self.create_publisher(JointState, 'robot/joint_states', 1) # use relative dir, scoped by namespace for multi-robot
-        self._pub_ee = self.create_publisher(PoseStamped, 'robot/ee_pose', 1) # use relative dir, scoped by namespace for multi-robot
-        self._pub_gripper = self.create_publisher(Float64, 'robot/gripper_pos', 1) # use relative dir, scoped by namespace for multi-robot
+        self._pub_joints = self.create_publisher(JointState, 'robot/joint_states', 1)
+        self._pub_ee = self.create_publisher(PoseStamped, 'robot/ee_pose', 1)
+        self._pub_gripper = self.create_publisher(Float64, 'robot/gripper_pos', 1)
 
         # --- subscriber (relative name → scoped by namespace) ---
         self._sub_action = self.create_subscription(
@@ -154,6 +178,7 @@ class XArmDriverNode(Node):
             'policy/action_cmd',
             self._on_action_cmd,
             1,
+            callback_group=self._robot_cbg,
         )
 
         # --- servo mode switch service ---
@@ -161,6 +186,7 @@ class XArmDriverNode(Node):
             SetBool,
             'robot/set_servo_mode',
             self._on_set_servo_mode,
+            callback_group=self._robot_cbg,
         )
 
         # --- move-to-home service ---
@@ -168,6 +194,7 @@ class XArmDriverNode(Node):
             Trigger,
             'robot/move_home',
             self._on_move_home,
+            callback_group=self._robot_cbg,
         )
 
         # --- blocking execute (policy eval) ---
@@ -175,10 +202,12 @@ class XArmDriverNode(Node):
             ExecuteAction,
             'robot/execute_action',
             self._on_execute_action,
+            callback_group=self._robot_cbg,
         )
 
-        # --- state publish timer ---
-        self._timer = self.create_timer(1.0 / rate, self._publish_state) # create a timer for the state publishing, it will be called at the publish rate
+        # --- state publish timer (dedicated group — runs even during blocking moves) ---
+        self._timer = self.create_timer(1.0 / rate, self._publish_state,
+                                        callback_group=self._state_cbg)
 
     # ------------------------------------------------------------------
     # State publishing
@@ -266,12 +295,12 @@ class XArmDriverNode(Node):
         *, wait: bool,
     ) -> tuple[bool, str]:
         """Shared move path for topic callback and ExecuteAction service."""
-        if not (_WS['x'][0] <= x <= _WS['x'][1]):
-            return False, f'x={x:.1f} mm out of workspace [{_WS["x"]}]'
-        if not (_WS['y'][0] <= y <= _WS['y'][1]):
-            return False, f'y={y:.1f} mm out of workspace [{_WS["y"]}]'
-        if not (_WS['z'][0] <= z <= _WS['z'][1]):
-            return False, f'z={z:.1f} mm out of workspace [{_WS["z"]}]'
+        if not (self._x_limits[0] <= x <= self._x_limits[1]):
+            return False, f'x={x:.1f} mm out of workspace [{self._x_limits}]'
+        if not (self._y_limits[0] <= y <= self._y_limits[1]):
+            return False, f'y={y:.1f} mm out of workspace [{self._y_limits}]'
+        if not (self._z_limits[0] <= z <= self._z_limits[1]):
+            return False, f'z={z:.1f} mm out of workspace [{self._z_limits}]'
 
         if self._servo_mode:
             ok = self._driver.set_servo_cartesian(x, y, z, roll, pitch, yaw, is_radian=True)
@@ -429,10 +458,14 @@ class XArmDriverNode(Node):
 
 
 def main(args=None):
-    rclpy.init(args=args) # initialize the ROS client library
+    rclpy.init(args=args)
     node = XArmDriverNode()
+    # MultiThreadedExecutor lets _publish_state (state_cbg) fire concurrently
+    # with blocking execute_action / move_home calls (robot_cbg).
+    executor = MultiThreadedExecutor()
+    executor.add_node(node)
     try:
-        rclpy.spin(node) # spin the node, it will run until the node is stopped
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:

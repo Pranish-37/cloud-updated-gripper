@@ -32,7 +32,7 @@
 # Controls (once the pygame window opens):
 #   R              Toggle recording on / off
 #   N              Save episode, start next
-#   D              Discard episode, restart same index
+#   Backspace      Discard episode, restart same index
 #   ESC            Finalize dataset and quit
 #   W/S A/D        EE +x/-x  +y/-y
 #   Space/Ctrl     EE +z/-z
@@ -96,6 +96,20 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
     exit 1
 fi
 
+TELEOP_CONFIG_FILE="${REPO_ROOT}/config/teleop.yaml"
+if [[ ! -f "$TELEOP_CONFIG_FILE" ]]; then
+    echo "[ERROR] Config file not found: ${TELEOP_CONFIG_FILE}"
+    echo "        Expected at: config/teleop.yaml"
+    exit 1
+fi
+
+SAFETY_CONFIG_FILE="${REPO_ROOT}/config/safety.yaml"
+if [[ ! -f "$SAFETY_CONFIG_FILE" ]]; then
+    echo "[ERROR] Config file not found: ${SAFETY_CONFIG_FILE}"
+    echo "        Expected at: config/safety.yaml"
+    exit 1
+fi
+
 # ---------------------------------------------------------------------------
 # Source ROS 2, workspace, lerobot (ros2 launch ignores interactive PYTHONPATH)
 # ---------------------------------------------------------------------------
@@ -120,7 +134,6 @@ echo "╠═══════════════════════�
 printf  "║  config    : %-49s║\n" "data_collection + teleop + safety.yaml"
 DISPLAY_IP="${ROBOT_IP:-$(grep 'robot_ip:' "$CONFIG_FILE" | awk '{print $2}' | tr -d '"' || true)}"
 printf  "║  robot ip  : %-49s║\n" "${DISPLAY_IP}"
-TELEOP_CONFIG_FILE="${REPO_ROOT}/config/teleop.yaml"
 if [[ -n "$USE_SPACEMOUSE" ]]; then
     printf "║  spacemouse: %-49s║\n" "${USE_SPACEMOUSE}"
 else

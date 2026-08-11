@@ -12,10 +12,10 @@
     # ---------------------------------------------------------------------------
     # Dataset
     # ---------------------------------------------------------------------------
-    dataset_root: "/workspace/data/test2"   # absolute path on disk
-    dataset_repo_id: "CloudGripper/test2"                           # HuggingFace-style repo id
-    total_episodes: 100                                                    # stop after this many episodes
-    task: "test2"                                                   # task description string (optional)
+    dataset_root: "/workspace/data/peg_in_hole"   # absolute path on disk
+    dataset_repo_id: "CloudGripper/peg_in_hole"                           # HuggingFace-style repo id
+    total_episodes: 50                                                    # stop after this many episodes
+    task: "peg_in_hole"                                                   # task description string (optional)
     push_to_hub: false                                                     # set true to upload to HuggingFace after collection
 
     # ---------------------------------------------------------------------------
@@ -23,8 +23,8 @@
     # ---------------------------------------------------------------------------
     fps: 15.0                # recording frame rate (must match obs_aggregator publish_rate)
     dof_mode: 3             # 3 = 3-DoF (ee_xyz + gripper), 6 = 6-DoF (ee_xyz + rpy + gripper)
-    image_height: 1080
-    image_width: 1920
+    image_height: 480
+    image_width: 640
     image_writer_threads: 4
 
     # ---------------------------------------------------------------------------
@@ -38,12 +38,11 @@
     enable_depth:  false
     enable_infra1: false
     enable_infra2: false
-    rgb_camera.color_profile: "1920x1080x15" # 15 fps is recommended for data collection
+    rgb_camera.color_profile: "640x480x15" # 15 fps is recommended for data collection
     rgb_camera.color_format: "RGB8"
     realsense_node_name: "camera/camera"   # ae_awb_controller → /camera/camera/set_parameters
 
     robot_ip: "192.168.0.244"
-    robot_home_position: [330.0, 0.0, 160.0, 3.14159, 0.0, 0.0, 850.0]  # [x, y, z, roll, pitch, yaw (rad), gripper]
     servo_mode: true                # xarm_driver: low-latency teleop streaming
     robot_publish_rate: 50.0        # xarm_driver state Hz (separate from obs publish_rate)
 

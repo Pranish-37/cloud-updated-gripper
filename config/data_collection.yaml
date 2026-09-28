@@ -12,10 +12,10 @@
     # ---------------------------------------------------------------------------
     # Dataset
     # ---------------------------------------------------------------------------
-    dataset_root: "/workspace/data/peg_in_hole"   # absolute path on disk
-    dataset_repo_id: "CloudGripper/peg_in_hole"                           # HuggingFace-style repo id
+    dataset_root: "/workspace/data/donut_hanging_Pranish"   # absolute path on disk
+    dataset_repo_id: "CloudGripper/donut_hanging_Pranish"                           # HuggingFace-style repo id
     total_episodes: 50                                                    # stop after this many episodes
-    task: "peg_in_hole"                                                   # task description string (optional)
+    task: "donut_hanging_Pranish"                                                   # task description string (optional)
     push_to_hub: false                                                     # set true to upload to HuggingFace after collection
 
     # ---------------------------------------------------------------------------

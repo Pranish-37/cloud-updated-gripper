@@ -1,0 +1,13 @@
+# xarm_driver.yaml
+# Shared xarm_driver safety params for standalone teleop (launch_teleop.sh).
+# data_collection / evaluation also declare the same max_step_* keys in their YAMLs.
+
+/**:
+  ros__parameters:
+    # safety hard gate on /policy/action_cmd only
+    max_step_x_mm: 5.0
+    max_step_y_mm: 5.0
+    max_step_z_mm: 5.0
+    max_step_roll_deg: 2.0
+    max_step_pitch_deg: 2.0
+    max_step_yaw_deg: 2.0

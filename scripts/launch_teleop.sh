@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+v bash
 # =============================================================================
 # launch_teleop.sh — Start xarm_driver (servo mode) + teleop_node
 #

@@ -3,11 +3,19 @@
 /install/
 /log/
 /build/
+/checkpoints/
+/episodes/
+/data/
+/policy/
+/eval_outputs/
+"camera testing_can be deleted later/"
+*.jpg
+*.jpeg
+*.png
+*.mp4
+*.parquet
 
 # Python
 **/__pycache__/
 **/*.py[cod]
 /lerobot/
-/data/
-/policy/
-/eval_outputs/
